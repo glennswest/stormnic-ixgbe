@@ -44,6 +44,7 @@ the blade; the master holds the BMC and console access.
 ## Work plan
 
 - [ ] Driver scaffold: `EFI_DRIVER_BINDING_PROTOCOL` (Supported/Start/Stop), matching the PCI IDs; build as an EFI boot-service driver (`/subsystem:efi_boot_service_driver`)
+  - **In progress (#1):** `build.rs` sets `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER`; `uefi::driver::install` puts the binding on the image handle; `src/pci_io.rs` defines `EFI_PCI_IO_PROTOCOL` from the UEFI spec (the `uefi` crate has none); `src/ids.rs` holds the 82599/X540/X552 device IDs; Supported reads the ID through PciIo (GetProtocol), then tries a `BY_DRIVER` open so a platform driver that already owns the NIC wins; Start keeps the `BY_DRIVER` open, Stop closes it. Every Intel NIC seen is logged, matched or not, so the first boot on server1 names its exact device ID (not yet known: the SOL log shows only `Intel(R) Boot Agent XE` and MAC ac:1f:6b:8a:a7:9c).
 - [ ] Bring-up from the datasheet: reset, EEPROM/MAC read, link setup (SFP+ and 10GBASE-T), link status
 - [ ] Descriptor rings: legacy or advanced RX/TX descriptors, DMA buffers via `EFI_PCI_IO_PROTOCOL` Map/Unmap
 - [ ] `EFI_SIMPLE_NETWORK_PROTOCOL`: Start/Stop/Initialize/Reset/Shutdown, ReceiveFilters (unicast, broadcast, multicast), Transmit/Receive, GetStatus, StationAddress; install on a child handle with a MAC device path
