@@ -93,7 +93,12 @@ driver on its media, then calls the binding for each controller:
 (§14.4), because the `uefi` crate doesn't have it. So far only config reads
 and GetLocation are used.
 
-There is **no bring-up, no DMA and no SNP yet** (#2, #3, #4), so a bound NIC
+The common reset, NVM MAC, and link-status primitives in `src/hardware.rs`
+are compiled for UEFI and have a standalone simulated-register test harness
+(`sc-build scripts/test-hardware.sh`). They are not yet called by Start; PHY
+setup and binding integration remain open in #2. See [bring-up notes](docs/bring-up.md).
+
+There is **no active bring-up, no DMA and no SNP yet** (#2, #3, #4), so a bound NIC
 has no network handle. **Until #4 lands, don't put this driver on media next
 to `ipxe-intelx.efi`:** whichever driver binds first holds the NIC, and if
 it's this one, the NIC has no SNP.
