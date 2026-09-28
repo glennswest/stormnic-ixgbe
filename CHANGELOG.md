@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-09-28
+- **docs:** Record the datasheet bring-up implementation and verification plan for #2.
 - **docs:** Refreshed README and CLAUDE.md from the code: the full 22-ID table and the class-code and VF rules, `scripts/check-driver.sh`, no configuration or ports, every console line exactly as printed, how it ships (stormbootx#29, no golden), and the platform-driver rule described as the BY_DRIVER PciIo check it is
 - **docs:** Work plan: #1 builds and checks as a boot-service driver on dev (`sc-build scripts/check-driver.sh` at ed58e7c); the server1 boot waits on stormbootx#29, which gets the `.efi` onto the stormbootx media
 
