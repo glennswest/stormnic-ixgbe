@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-09-28
+- **docs:** Record successful remote verification of the #2 common primitives (10 tests and UEFI PE check at fed1c3b); leave PHY setup and binding integration pending the owner support-scope decision.
 - **refactor:** Add datasheet-based, UEFI-independent reset, NVM-provisioned MAC, and current link-status primitives with bounded failure paths and simulated-register tests for #2; binding integration awaits PHY scope resolution.
 - **docs:** Record the datasheet bring-up implementation and verification plan for #2.
 - **docs:** Refreshed README and CLAUDE.md from the code: the full 22-ID table and the class-code and VF rules, `scripts/check-driver.sh`, no configuration or ports, every console line exactly as printed, how it ships (stormbootx#29, no golden), and the platform-driver rule described as the BY_DRIVER PciIo check it is

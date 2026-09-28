@@ -60,3 +60,8 @@ both LANs, last-queue disable, timeout bounds, invalid NVM/MAC, virtualization,
 transport errors, device removal, and current link/speed decoding. They do
 not emulate a PHY and cannot prove an electrical link works. The separate
 hardware check remains #7; full PHY bring-up and integration are still #2.
+
+Remote verification on 2026-09-28 at `fed1c3b`: all 10 tests passed; the
+release driver passed the x86_64 PE32+ subsystem-11 check (25,600 bytes).
+The remote job exited 0. The wrapper subsequently reported that its local
+`runs.jsonl` was read-only; no host changes were attempted.
