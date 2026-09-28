@@ -37,7 +37,36 @@ would make this a GPL derivative, and it is MIT.
 sc-build 'cargo build --release --target x86_64-unknown-uefi'
 ```
 
-## Status
+## What it does today
 
-Scaffold: the entry point logs and returns `UNSUPPORTED`. See CLAUDE.md for the
-work plan.
+The image is linked as an EFI boot-service driver (`build.rs`). Its entry
+point installs `EFI_DRIVER_BINDING_PROTOCOL` on its image handle and prints
+
+```
+stormnic-ixgbe 0.1.0: driver binding installed (22 Intel 10G device IDs)
+```
+
+When the firmware connects controllers (stormbootx does, after loading every
+driver on its media):
+
+- **Supported** reads each PCI function's vendor/device ID through
+  `EFI_PCI_IO_PROTOCOL` and accepts the Intel 82599/X540/X552 IDs in
+  `src/ids.rs`. If a platform driver already has the NIC's PciIo open
+  `BY_DRIVER`, it prints `already driven by another driver; leaving it` and
+  declines, so the platform's driver wins.
+- **Start** holds PciIo `BY_DRIVER` and prints `Start: bound`. **Stop**
+  releases it.
+- An Intel network function whose ID is not in the list is printed with its
+  ID (`not in the 82599/X540/X552 list`), so a boot names the device a
+  machine really has.
+
+There is no bring-up or SNP yet (see CLAUDE.md), so a bound NIC has no
+network handle. **Until the SNP lands, don't put this driver on media next to
+`ipxe-intelx.efi`:** whichever binds first holds the NIC, and if it's this one
+the NIC has no SNP.
+
+To build it and check the image is a boot-service driver (PE subsystem 11):
+
+```bash
+sc-build scripts/check-driver.sh
+```
