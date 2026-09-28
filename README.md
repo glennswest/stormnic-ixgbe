@@ -22,8 +22,22 @@ source). This crate replaces it (stormbootx#27).
 
 ## Hardware
 
-- PCI IDs: 8086:10fb (82599 SFP+), 8086:1528 (X540-T2), 8086:15ad/15ab (X552) — confirm the blades' exact ID with `lspci -nn` or the EFI shell `pci` command
-- References: Intel 82599 10 GbE Controller Datasheet; Intel Ethernet Controller X540 Datasheet; Intel X552 (Xeon D) datasheet
+`src/ids.rs` lists the Intel (8086) 10 GbE physical functions the driver
+binds, 22 device IDs:
+
+| Family | Device IDs |
+|---|---|
+| 82599 | 10f7, 10f8, 10f9, 10fb (SFP+), 10fc, 1507, 1514, 1517, 151c (10GBASE-T), 1529, 152a, 154a, 154d, 1557, 1558 |
+| X540 | 1528 (X540-T), 1560 (X540-T1) |
+| X552 (Xeon D-1500) | 15aa, 15ab, 15ac (SFP+), 15ad (X552/X557-AT), 15ae (1000BASE-T) |
+
+It only binds a function whose class code is network (0x02). Virtual functions (82599
+10ed, X540 1515, X552 15a8) are deliberately left out. The blades' exact ID
+isn't known yet. The driver prints it on the first boot, because it logs every
+Intel network function it sees, matched or not (#1).
+
+References: Intel 82599 10 GbE Controller Datasheet; Intel Ethernet
+Controller X540 Datasheet; Intel X552 (Xeon D) datasheet.
 
 **Written from the vendor documentation, not translated from iPXE or Linux.**
 Reading other drivers for behaviour is fine; copying their code or structure
@@ -31,42 +45,79 @@ would make this a GPL derivative, and it is MIT.
 
 ## Build
 
-`x86_64-unknown-uefi`, built on dev with `sc-build` after pushing:
-
-```bash
-sc-build 'cargo build --release --target x86_64-unknown-uefi'
-```
-
-## What it does today
-
-The image is linked as an EFI boot-service driver (`build.rs`). Its entry
-point installs `EFI_DRIVER_BINDING_PROTOCOL` on its image handle and prints
-
-```
-stormnic-ixgbe 0.1.0: driver binding installed (22 Intel 10G device IDs)
-```
-
-When the firmware connects controllers (stormbootx does, after loading every
-driver on its media):
-
-- **Supported** reads each PCI function's vendor/device ID through
-  `EFI_PCI_IO_PROTOCOL` and accepts the Intel 82599/X540/X552 IDs in
-  `src/ids.rs`. If a platform driver already has the NIC's PciIo open
-  `BY_DRIVER`, it prints `already driven by another driver; leaving it` and
-  declines, so the platform's driver wins.
-- **Start** holds PciIo `BY_DRIVER` and prints `Start: bound`. **Stop**
-  releases it.
-- An Intel network function whose ID is not in the list is printed with its
-  ID (`not in the 82599/X540/X552 list`), so a boot names the device a
-  machine really has.
-
-There is no bring-up or SNP yet (see CLAUDE.md), so a bound NIC has no
-network handle. **Until the SNP lands, don't put this driver on media next to
-`ipxe-intelx.efi`:** whichever binds first holds the NIC, and if it's this one
-the NIC has no SNP.
-
-To build it and check the image is a boot-service driver (PE subsystem 11):
+Target `x86_64-unknown-uefi`, built on dev with `sc-build` after pushing.
+`scripts/check-driver.sh` builds the release image and checks it is an x86_64
+PE32+ with subsystem 11 (EFI boot-service driver), not 10 (application). The
+firmware unloads an application as soon as its entry point returns.
 
 ```bash
 sc-build scripts/check-driver.sh
+# or just the build:
+sc-build 'cargo build --release --target x86_64-unknown-uefi'
 ```
+
+The image is `target/x86_64-unknown-uefi/release/stormnic-ixgbe.efi`, about
+25 KB. `build.rs` adds `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER` to the link. The
+release profile is size-optimised (`opt-level = "z"`, LTO, `panic = "abort"`,
+stripped).
+
+There are no configuration keys, options, files or ports. The driver takes
+no input apart from the PCI functions the firmware offers it.
+
+## How it ships
+
+The driver is a file in `\stormboot\drivers` on the stormbootx boot media.
+It is not a stormcentral component and has no golden. sc-build keeps nothing
+from a build. So stormbootx has to build the `.efi` from a pinned commit, the
+way its `scripts/build-nic-drivers.sh` builds iPXE's drivers. That isn't done
+yet: **stormbootx#29**. Until it lands, the driver can't reach any media.
+
+## What it does today
+
+The entry point installs `EFI_DRIVER_BINDING_PROTOCOL` on the image handle
+(through the `uefi` crate's `driver` module) and returns. The image stays
+resident. The firmware's `ConnectController`, which stormbootx runs after loading every
+driver on its media, then calls the binding for each controller:
+
+- **Supported** opens `EFI_PCI_IO_PROTOCOL` with GET_PROTOCOL and reads
+  the vendor/device ID and the class code from config space. For one of the IDs
+  above, it then tries a BY_DRIVER open. If another driver already
+  holds the function's PciIo BY_DRIVER (a platform driver that owns the NIC),
+  that open fails and the driver declines, so the platform's driver wins.
+  Handles without PciIo, and non-Intel or non-network functions, are
+  declined silently.
+- **Start** keeps PciIo open BY_DRIVER and records the controller.
+- **Stop** drops that open.
+
+`EFI_PCI_IO_PROTOCOL` is defined in `src/pci_io.rs` from the UEFI spec
+(§14.4), because the `uefi` crate doesn't have it. So far only config reads
+and GetLocation are used.
+
+There is **no bring-up, no DMA and no SNP yet** (#2, #3, #4), so a bound NIC
+has no network handle. **Until #4 lands, don't put this driver on media next
+to `ipxe-intelx.efi`:** whichever driver binds first holds the NIC, and if
+it's this one, the NIC has no SNP.
+
+### Console output
+
+Everything goes to the console, which on the blades is the SOL capture on
+stormcentral. `LOC` is `seg:bus:dev.fn`, or `(location unknown)` if
+GetLocation fails.
+
+| Line | When |
+|---|---|
+| `stormnic-ixgbe 0.1.0: driver binding installed (22 Intel 10G device IDs)` | entry point, success |
+| `stormnic-ixgbe 0.1.0: driver binding not installed: STATUS` | entry point, failure (the image returns that status) |
+| `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X552 list; not binding` | Supported (and Start), unlisted Intel NIC |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: Supported` | Supported, will bind |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: already driven by another driver (STATUS); leaving it` | Supported, a platform driver owns it |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound (scaffold: no SNP yet)` | Start |
+| `stormnic-ixgbe: LOC 8086:DDDD: Start could not open PciIo BY_DRIVER: STATUS` | Start, failure |
+| `stormnic-ixgbe: LOC: Stop: released` | Stop |
+| `stormnic-ixgbe: Stop for a controller this driver never started` | Stop, unknown controller (returns DEVICE_ERROR) |
+
+## Status
+
+Scaffold (#1): code done; the image is checked on dev; the server1 boot waits
+on stormbootx#29. Next: bring-up (#2), descriptor rings (#3), SNP (#4), then
+retire `ipxe-intelx.efi` (#5, stormbootx#27).

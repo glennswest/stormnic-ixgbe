@@ -18,7 +18,8 @@ scratch files go in `tmp/`.
   (`/subsystem:efi_boot_service_driver`), not an application, and it
   installs `EFI_DRIVER_BINDING_PROTOCOL` so the firmware's `ConnectController`
   binds it. stormbootx loads it and then connects controllers.
-- A platform's own driver must win: if the NIC already has an SNP, do nothing.
+- A platform's own driver must win. Supported tries a BY_DRIVER open of the NIC's
+  `EFI_PCI_IO_PROTOCOL`; if another driver already holds it, decline.
 - Everything the driver does is logged to the console. The only way to debug
   it on the blades is the SOL capture on stormcentral
   (`/var/lib/stormcentral/console/serverN/sol.log`).
@@ -26,12 +27,20 @@ scratch files go in `tmp/`.
 ## Build
 
 ```bash
+sc-build scripts/check-driver.sh   # build + check PE32+ subsystem 11
 sc-build 'cargo build --release --target x86_64-unknown-uefi'
 ```
 
+No configuration, ports or APIs; the console lines are listed in README.md.
+
+## How it ships
+
+In stormbootx's `\stormboot\drivers`. Not a stormcentral component (no golden);
+stormbootx builds it from a pinned commit once stormbootx#29 lands.
+
 ## Test
 
-Put the built `.efi` in a stormbootx ISO's `\stormboot\drivers`, **without**
+Once stormbootx#29 builds it, put the `.efi` in a stormbootx ISO's `\stormboot\drivers`, **without**
 `ipxe-intelx.efi` (`scripts/build-boot-agent.sh --iso --drivers DIR` in
 stormbootx). Boot server1 from the virtual CD, which the stormcentral minismbd
 serves as `\boot\stormbootx.iso`. Ask the master to swap the ISO and boot
