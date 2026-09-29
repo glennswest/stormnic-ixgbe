@@ -40,7 +40,7 @@ use uefi_raw::protocol::driver::DriverBindingProtocol;
 use crate::hardware::f82599::{self, Laser, PhyReset};
 use crate::hardware::mdio::{self, Speeds};
 use crate::hardware::rings::{self, Dma, Filter, Rings};
-use crate::snp::{self, Port};
+use crate::snp;
 use crate::hardware::sfp::{Kind, Module};
 use crate::hardware::x552::{self, Copper};
 use crate::hardware::{self, Error, Link, Port, Prepared, Registers, Setup};
@@ -72,7 +72,7 @@ struct Bound {
     /// The descriptor rings and buffers, mapped for DMA.
     dma: DmaRegion,
     /// The SNP, its child handle and the rings (`snp::create`).
-    port: *mut Port,
+    port: *mut snp::Port,
     /// The BY_DRIVER open; dropping it closes the protocol.
     pci: ScopedProtocol<PciIo>,
 }
