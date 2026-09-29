@@ -1,6 +1,6 @@
 #[path = "../src/hardware.rs"]
 mod hardware;
-use hardware::{Error, Link, Registers};
+use hardware::{Error, Family, Link, Registers, Setup};
 use std::collections::BTreeMap;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -132,4 +132,60 @@ fn reset_propagates_transport_errors_without_reading_mac() {
         assert!(matches!(hardware::reset(&mut io), Err(Error::Io(_))));
         assert!(!io.ops.contains(&Op::Read(0xa200)));
     }
+}
+#[test]
+fn x82599_applies_nvm_link_mode_with_restart_an_only() {
+    let mut io = Fake::ready(0);
+    // NVM-loaded: LMS 011 (10G serial), AUTOC2 PMA/PMD SFI, SDP3 driven low.
+    let autoc = (3 << 13) | (3 << 30) | (1 << 9);
+    io.regs.insert(hardware::AUTOC, autoc);
+    io.regs.insert(hardware::AUTOC2, 2 << 16);
+    io.regs.insert(hardware::ESDP, 0x0800);
+    let setup = hardware::setup_link(&mut io, Family::F82599).unwrap();
+    assert_eq!(setup, Setup::Restarted { autoc, autoc2: 2 << 16, esdp: 0x0800 });
+    let writes: Vec<_> = io.ops.iter().filter(|op| matches!(op, Op::Write(..))).collect();
+    assert_eq!(writes, [&Op::Write(hardware::AUTOC, autoc | (1 << 12))]);
+    assert_eq!(hardware::link_mode(autoc, 2 << 16), "10G SFI");
+}
+#[test]
+fn x540_and_x552_link_setup_write_nothing() {
+    for (family, expect) in [(Family::X540, Setup::PhyAutonomous), (Family::X552, Setup::Pending)] {
+        let mut io = Fake::ready(0);
+        assert_eq!(hardware::setup_link(&mut io, family), Ok(expect));
+        assert!(io.ops.is_empty());
+    }
+}
+#[test]
+fn x82599_link_setup_fails_closed_on_removed_device_or_io_error() {
+    let mut io = Fake::ready(0);
+    io.regs.insert(hardware::AUTOC, u32::MAX);
+    assert_eq!(hardware::setup_link(&mut io, Family::F82599), Err(Error::Removed));
+    assert!(!io.ops.iter().any(|op| matches!(op, Op::Write(..))));
+    let mut io = Fake::ready(0);
+    io.fail = Some(hardware::AUTOC2);
+    assert!(matches!(hardware::setup_link(&mut io, Family::F82599), Err(Error::Io(_))));
+    assert!(!io.ops.iter().any(|op| matches!(op, Op::Write(..))));
+}
+#[test]
+fn link_mode_names_each_lms() {
+    let lms = |v: u32| v << 13;
+    assert_eq!(hardware::link_mode(lms(0), 0), "1G SFI");
+    assert_eq!(hardware::link_mode(lms(0) | (1 << 9), 0), "1G KX/BX, no AN");
+    assert_eq!(hardware::link_mode(lms(1) | (1 << 7), 0), "10G KX4, no AN");
+    assert_eq!(hardware::link_mode(lms(1), 0), "10G XAUI, no AN");
+    assert_eq!(hardware::link_mode(lms(3), 0), "10G KR, no AN");
+    assert_eq!(hardware::link_mode(lms(4), 0), "KX/KX4/KR AN");
+    assert_eq!(hardware::link_mode(lms(7), 0), "KX/KX4/KR AN + SGMII");
+}
+#[test]
+fn link_wait_is_bounded_and_returns_early_on_link_up() {
+    let mut io = Fake::ready(0);
+    assert_eq!(hardware::wait_link(&mut io, 3000), Ok(Link::Down));
+    assert_eq!(io.ops.iter().filter(|op| **op == Op::Delay(10_000)).count(), 300);
+    let mut io = Fake::ready(0);
+    io.regs.insert(hardware::LINKS, (1 << 30) | (3 << 28));
+    assert_eq!(hardware::wait_link(&mut io, 3000), Ok(Link::Up { megabits: Some(10_000) }));
+    assert!(!io.ops.iter().any(|op| matches!(op, Op::Delay(_))));
+    io.regs.insert(hardware::LINKS, u32::MAX);
+    assert_eq!(hardware::wait_link(&mut io, 3000), Err(Error::Removed));
 }

@@ -31,6 +31,9 @@ pub enum AttributeOp {
     Supported = 4,
 }
 
+/// `EFI_PCI_IO_ATTRIBUTE_MEMORY`: the function decodes its memory BARs.
+pub const ATTRIBUTE_MEMORY: u64 = 0x0002;
+
 /// `EFI_PCI_IO_PROTOCOL_OPERATION` (for `Map`).
 #[allow(dead_code)]
 #[repr(u32)]
@@ -200,5 +203,33 @@ impl PciIo {
             )
         }
         .to_result_with_val(|| l)
+    }
+
+    /// One dword at `offset` in memory BAR `bar`.
+    pub fn mem_read_u32(&self, bar: u8, offset: u32) -> Result<u32> {
+        let mut v: u32 = 0;
+        // SAFETY: live PciIo interface; the buffer holds exactly one U32.
+        unsafe {
+            (self.mem.read)(self.this(), Width::U32, bar, offset.into(), 1, (&raw mut v).cast())
+        }
+        .to_result_with_val(|| v)
+    }
+
+    pub fn mem_write_u32(&self, bar: u8, offset: u32, value: u32) -> Result {
+        let mut v = value;
+        // SAFETY: live PciIo interface; the buffer holds exactly one U32,
+        // which the firmware only reads.
+        unsafe {
+            (self.mem.write)(self.this(), Width::U32, bar, offset.into(), 1, (&raw mut v).cast())
+        }
+        .to_result()
+    }
+
+    /// `Attributes(op, attributes)`, returning the result word (meaningful
+    /// for Get and Supported).
+    pub fn attributes(&self, op: AttributeOp, attributes: u64) -> Result<u64> {
+        let mut r: u64 = 0;
+        // SAFETY: live PciIo interface; `r` is a valid out-pointer.
+        unsafe { (self.attributes)(self.this(), op, attributes, &raw mut r) }.to_result_with_val(|| r)
     }
 }

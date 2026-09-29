@@ -7,6 +7,9 @@
 pub const CTRL: u32 = 0x00000;
 pub const STATUS: u32 = 0x00008;
 pub const LINKS: u32 = 0x042a4;
+pub const AUTOC: u32 = 0x042a0;
+pub const AUTOC2: u32 = 0x042a8;
+pub const ESDP: u32 = 0x00020;
 const RXCTRL: u32 = 0x03000;
 const EIMC: u32 = 0x00888;
 const EEC: u32 = 0x10010;
@@ -18,6 +21,7 @@ const MASTER_DISABLE: u32 = 1 << 2;
 const MASTER_ENABLED: u32 = 1 << 19;
 const RESET: u32 = (1 << 26) | (1 << 3);
 const QUEUE_ENABLE: u32 = 1 << 25;
+const RESTART_AN: u32 = 1 << 12;
 
 pub trait Registers {
     type Error;
@@ -167,4 +171,84 @@ pub fn link<R: Registers>(io: &mut R) -> Result<Link, Error<R::Error>> {
         1 => Some(100), 2 => Some(1000), 3 => Some(10_000), _ => None,
     };
     Ok(Link::Up { megabits })
+}
+
+/// Controller family; the link setup differs, the reset above does not
+/// (EEC, EEMNGCTL, RDRXCTL, RAR0 and LINKS share offsets in all three).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family { F82599, X540, X552 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setup {
+    /// 82599: the NVM-loaded AUTOC/AUTOC2 were applied with Restart_AN.
+    /// ESDP is read only for the console: SFP+ TX_DISABLE/MOD_ABS pins.
+    Restarted { autoc: u32, autoc2: u32, esdp: u32 },
+    /// X540: the integrated PHY negotiates from its NVM image; nothing written.
+    PhyAutonomous,
+    /// X552: no link-setup write; the vendor PHY documentation is missing (#2).
+    Pending,
+}
+
+/// Link setup after `reset`, per family.
+///
+/// 82599 (datasheet 4.6.3.2, 4.6.4, 3.7.4.4): the link interconnect and link
+/// mode (AUTOC.LMS and PMA/PMD fields, AUTOC2.10G_PMA_PMD_Serial) are loaded
+/// from the NVM, which describes the board's media; software applies them
+/// with AUTOC.Restart_AN. They are not rewritten here: the NVM is the only
+/// source of what the board wires to the MAC. SDPs (SFP+ TX_DISABLE and
+/// module presence) are board-specific (Table 3-13 is an example) and
+/// preserved across resets, so they are left as firmware set them.
+///
+/// X540 (datasheet 3.6.3.2, 4.6.2): the NVM holds enough to bring the link
+/// up; the PHY auto-negotiates by itself and software only changes its
+/// settings to depart from the defaults. No MDIO write is made.
+pub fn setup_link<R: Registers>(io: &mut R, family: Family) -> Result<Setup, Error<R::Error>> {
+    match family {
+        Family::F82599 => {
+            let autoc = read(io, AUTOC)?;
+            let autoc2 = read(io, AUTOC2)?;
+            let esdp = read(io, ESDP)?;
+            write(io, AUTOC, autoc | RESTART_AN)?;
+            Ok(Setup::Restarted { autoc, autoc2, esdp })
+        }
+        Family::X540 => Ok(Setup::PhyAutonomous),
+        Family::X552 => Ok(Setup::Pending),
+    }
+}
+
+/// The 82599 link mode AUTOC/AUTOC2 select, for the console (AUTOC.LMS,
+/// datasheet 8.2.3.22.19; 10G_PMA_PMD_Serial, 8.2.3.22.22).
+pub fn link_mode(autoc: u32, autoc2: u32) -> &'static str {
+    match (autoc >> 13) & 7 {
+        0 if autoc & (1 << 9) == 0 => "1G SFI",
+        0 => "1G KX/BX, no AN",
+        1 => match (autoc >> 7) & 3 {
+            0 => "10G XAUI, no AN",
+            1 => "10G KX4, no AN",
+            2 => "10G CX4, no AN",
+            _ => "10G parallel (reserved PMA/PMD)",
+        },
+        2 => "1G BX, clause 37 AN",
+        3 => match (autoc2 >> 16) & 3 {
+            0 => "10G KR, no AN",
+            2 => "10G SFI",
+            _ => "10G serial (reserved PMA/PMD)",
+        },
+        4 => "KX/KX4/KR AN",
+        5 => "SGMII 100M/1G",
+        6 => "KX/KX4/KR AN + 1G clause 37 AN",
+        _ => "KX/KX4/KR AN + SGMII",
+    }
+}
+
+/// Poll `link` every 10 ms for up to `millis`; link down at the end is a
+/// result, not an error (no cable, or the partner is still negotiating).
+pub fn wait_link<R: Registers>(io: &mut R, millis: usize) -> Result<Link, Error<R::Error>> {
+    let mut elapsed = 0;
+    loop {
+        let state = link(io)?;
+        if matches!(state, Link::Up { .. }) || elapsed >= millis { return Ok(state); }
+        io.delay_us(10_000);
+        elapsed += 10;
+    }
 }

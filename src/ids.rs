@@ -12,37 +12,40 @@ pub const INTEL: u16 = 0x8086;
 /// PCI base class of a network controller (config offset 0x0b).
 pub const CLASS_NETWORK: u8 = 0x02;
 
+pub use crate::hardware::Family;
+
 pub struct Nic {
     pub device: u16,
     pub name: &'static str,
+    pub family: Family,
 }
 
 pub const SUPPORTED: &[Nic] = &[
     // 82599
-    Nic { device: 0x10f7, name: "82599 KX4" },
-    Nic { device: 0x10f8, name: "82599 combined backplane" },
-    Nic { device: 0x10f9, name: "82599 CX4" },
-    Nic { device: 0x10fb, name: "82599 SFP+" },
-    Nic { device: 0x10fc, name: "82599 XAUI" },
-    Nic { device: 0x1507, name: "82599 express module" },
-    Nic { device: 0x1514, name: "82599 KX4/KR mezzanine" },
-    Nic { device: 0x1517, name: "82599 KR" },
-    Nic { device: 0x151c, name: "82599 10GBASE-T" },
-    Nic { device: 0x1529, name: "82599 SFP+ FCoE" },
-    Nic { device: 0x152a, name: "82599 backplane FCoE" },
-    Nic { device: 0x154a, name: "82599 SFP+ quad" },
-    Nic { device: 0x154d, name: "82599 SFP+ SF2" },
-    Nic { device: 0x1557, name: "82599EN SFP+" },
-    Nic { device: 0x1558, name: "82599 QSFP+" },
+    Nic { device: 0x10f7, name: "82599 KX4", family: Family::F82599 },
+    Nic { device: 0x10f8, name: "82599 combined backplane", family: Family::F82599 },
+    Nic { device: 0x10f9, name: "82599 CX4", family: Family::F82599 },
+    Nic { device: 0x10fb, name: "82599 SFP+", family: Family::F82599 },
+    Nic { device: 0x10fc, name: "82599 XAUI", family: Family::F82599 },
+    Nic { device: 0x1507, name: "82599 express module", family: Family::F82599 },
+    Nic { device: 0x1514, name: "82599 KX4/KR mezzanine", family: Family::F82599 },
+    Nic { device: 0x1517, name: "82599 KR", family: Family::F82599 },
+    Nic { device: 0x151c, name: "82599 10GBASE-T", family: Family::F82599 },
+    Nic { device: 0x1529, name: "82599 SFP+ FCoE", family: Family::F82599 },
+    Nic { device: 0x152a, name: "82599 backplane FCoE", family: Family::F82599 },
+    Nic { device: 0x154a, name: "82599 SFP+ quad", family: Family::F82599 },
+    Nic { device: 0x154d, name: "82599 SFP+ SF2", family: Family::F82599 },
+    Nic { device: 0x1557, name: "82599EN SFP+", family: Family::F82599 },
+    Nic { device: 0x1558, name: "82599 QSFP+", family: Family::F82599 },
     // X540
-    Nic { device: 0x1528, name: "X540-T" },
-    Nic { device: 0x1560, name: "X540-T1" },
+    Nic { device: 0x1528, name: "X540-T", family: Family::X540 },
+    Nic { device: 0x1560, name: "X540-T1", family: Family::X540 },
     // X552 (Xeon D-1500)
-    Nic { device: 0x15aa, name: "X552 backplane" },
-    Nic { device: 0x15ab, name: "X552 backplane" },
-    Nic { device: 0x15ac, name: "X552 SFP+" },
-    Nic { device: 0x15ad, name: "X552/X557-AT 10GBASE-T" },
-    Nic { device: 0x15ae, name: "X552 1000BASE-T" },
+    Nic { device: 0x15aa, name: "X552 backplane", family: Family::X552 },
+    Nic { device: 0x15ab, name: "X552 backplane", family: Family::X552 },
+    Nic { device: 0x15ac, name: "X552 SFP+", family: Family::X552 },
+    Nic { device: 0x15ad, name: "X552/X557-AT 10GBASE-T", family: Family::X552 },
+    Nic { device: 0x15ae, name: "X552 1000BASE-T", family: Family::X552 },
 ];
 
 pub fn lookup(vendor: u16, device: u16) -> Option<&'static Nic> {

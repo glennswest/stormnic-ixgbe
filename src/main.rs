@@ -11,8 +11,6 @@
 extern crate alloc;
 
 mod binding;
-// Compiled for UEFI now; binding integration follows PHY scope resolution (#2).
-#[allow(dead_code)]
 mod hardware;
 mod ids;
 mod pci_io;
