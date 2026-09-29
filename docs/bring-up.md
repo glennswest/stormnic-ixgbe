@@ -1,10 +1,10 @@
 # Bring-up implementation notes (#2)
 
-The shared primitives in `src/hardware.rs` are compiled into the UEFI source
-module tree, but Start does not call them yet. The owner requires all 22 matched
-PCI IDs (decision recorded on #2 on 2026-09-28). Link setup and binding
-integration remain unfinished; the documentation gap below needs owner input.
-No new hardware support is claimed by this checkpoint.
+Start runs the sequence below through BAR0 (`src/binding.rs` →
+`src/hardware.rs`). The owner requires all 22 matched PCI IDs (decision
+recorded on #2 on 2026-09-28). 82599 and X540 link setup are implemented from
+their datasheets; X552 PHY setup is not, pending the documentation gap below
+(owner question on #2). Nothing here has run on hardware yet.
 
 ## Vendor sources
 
@@ -108,3 +108,49 @@ Remote regression verification on 2026-09-29 at `50b6bb5`:
 wrapper again could not append its read-only `runs.jsonl`; no host change
 was attempted. This verifies the unchanged scaffold/common primitives only,
 not PHY bring-up or a live link. The subsequent commit records these results.
+
+## Start integration and 82599/X540 link setup (2026-09-29)
+
+Start opens PciIo BY_DRIVER, reads the PCI attributes (Get), checks memory
+decode is supported, and enables `EFI_PCI_IO_ATTRIBUTE_MEMORY`. Bus mastering
+is not enabled: nothing here does DMA (#3 will). The original attributes are
+restored with Set on Stop and on any failed Start. Registers are 32-bit
+PciIo memory accesses on BAR 0; delays are boot-services Stall.
+
+After `reset` (above), `setup_link` differs per family:
+
+- **82599** — datasheet 4.6.3.2: the link interconnect configuration is set
+  through the EEPROM; 4.6.4.1–4.6.4.4: every link type's flow is "EEPROM
+  electrical setup, configure AUTOC.LMS / PMA-PMD fields and
+  AUTOC2.10G_PMA_PMD_Serial, restart with AUTOC.Restart_AN, verify with
+  LINKS". AUTOC and AUTOC2 are loaded from the NVM (8.2.3.22.19/22, fields
+  marked `*`), and the NVM is the only statement of the board's media, so
+  the driver keeps the loaded values and writes `AUTOC | Restart_AN` once.
+  Global reset includes link reset, so the 3.7.4.2 "LMS unchanged" toggle is
+  not needed. SW_FW_SYNC's MAC CSR bit is "reserved for future use"
+  (10.5.4), so no semaphore is taken for AUTOC. SDP pins (SFP+ TX_DISABLE,
+  MOD_ABS) are board-specific — Table 3-13 is an example — and ESDP keeps
+  its state across software resets, so ESDP is only read and logged.
+- **X540** — datasheet 4.6.2: the NVM holds enough to bring the link up;
+  3.6.3.2: the PHY auto-negotiates and software changes its settings only to
+  depart from the defaults; 3.6.3.3.3: the PHY is reset with the MAC except
+  on software-only reset. No MDIO access is made.
+- **X552** — no link-setup write (see the audit below); the NVM defaults
+  stand and the console says so.
+
+`wait_link` then polls current LINKS.LINK_UP every 10 ms for up to 3 s.
+Link down at the deadline is reported, not an error.
+
+Known limits, not claimed as done: an SFP+ module whose speed differs from
+the NVM link mode (a 1G module on a 10G SFI port) is not detected or
+adapted — that needs the SFP I²C module ID, not implemented; link flow
+control is not configured (X540 3.6.3.2.2.2, 82599 4.6.3.2 — left zero
+until the SNP needs it); link is only sampled in Start, the SNP (#4) will
+report it live. The simulated-register tests check register order and
+bounds; they cannot prove an electrical link.
+
+Remote verification at `025a137`: `sc-build 'scripts/test-hardware.sh &&
+scripts/check-driver.sh'` — 15 tests passed (5 new: 82599 Restart_AN with
+NVM AUTOC preserved, X540/X552 write nothing, 82599 fail-closed on removal
+and I/O error, LMS decoding, bounded link wait); release image x86_64 PE32+
+subsystem 11, 32,256 bytes. Exit 0, drive deleted.
