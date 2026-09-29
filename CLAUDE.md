@@ -63,4 +63,5 @@ the blade; the master holds the BMC and console access.
 - [ ] Descriptor rings: legacy or advanced RX/TX descriptors, DMA buffers via `EFI_PCI_IO_PROTOCOL` Map/Unmap
 - [ ] `EFI_SIMPLE_NETWORK_PROTOCOL`: Start/Stop/Initialize/Reset/Shutdown, ReceiveFilters (unicast, broadcast, multicast), Transmit/Receive, GetStatus, StationAddress; install on a child handle with a MAC device path
 - [ ] Test on server1 (X9 blade): only this driver in `\stormboot\drivers`, stormbootx prints `tcp4 : available` and claims its boothost
+- [ ] Commit `Cargo.lock` (#11) so stormbootx's pinned-commit build can use `--locked`: generate it on dev through sc-build (never locally), commit, verify `cargo build --locked`, update docs/scripts to build locked.
 - [ ] Retire `ipxe-intelx.efi` from the stormbootx media (stormbootx#27)
