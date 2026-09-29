@@ -1,16 +1,25 @@
-//! Bring-up primitives from the datasheets (X552 PHY setup from Intel's
-//! BSD-licensed shared code, `x552`); see docs/bring-up.md for provenance.
+//! Bring-up: reset and NVM MAC from the datasheets; PHY and link
+//! programming per docs/spec/phy.md (the independent specification written
+//! from Intel's BSD-licensed shared code, #13). Section numbers in comments
+//! ("spec 5.4") point into that document.
 //!
 //! Kept independent of UEFI so failure sequences can be tested without a NIC.
 //! The caller owns PciIo BY_DRIVER, enables BAR memory access, and supplies
 //! firmware Stall for delays. No DMA buffers or bus-master enable are needed.
+//!
+//! Order, per spec 9: `begin` (port number, quiesce), `veto` (MMNGC once),
+//! `prepare` (the PHY or module steps the spec puts before the MAC reset),
+//! `reset` (MAC reset per family, NVM MAC), `setup_link`, then `wait_link`.
 
 pub const CTRL: u32 = 0x00000;
 pub const STATUS: u32 = 0x00008;
-pub const LINKS: u32 = 0x042a4;
-pub const AUTOC: u32 = 0x042a0;
-pub const AUTOC2: u32 = 0x042a8;
 pub const ESDP: u32 = 0x00020;
+pub const HLREG0: u32 = 0x04240;
+pub const AUTOC: u32 = 0x042a0;
+pub const LINKS: u32 = 0x042a4;
+pub const AUTOC2: u32 = 0x042a8;
+pub const MMNGC: u32 = 0x042d0;
+pub const EERD: u32 = 0x10014;
 const RXCTRL: u32 = 0x03000;
 const EIMC: u32 = 0x00888;
 const EEC: u32 = 0x10010;
@@ -20,9 +29,11 @@ const RAL0: u32 = 0x0a200;
 const RAH0: u32 = 0x0a204;
 const MASTER_DISABLE: u32 = 1 << 2;
 const MASTER_ENABLED: u32 = 1 << 19;
-const RESET: u32 = (1 << 26) | (1 << 3);
+const RST: u32 = 1 << 26;
+const LNK_RST: u32 = 1 << 3;
 const QUEUE_ENABLE: u32 = 1 << 25;
-const RESTART_AN: u32 = 1 << 12;
+const LINK_UP: u32 = 1 << 30;
+const MNG_VETO: u32 = 1 << 0;
 
 pub trait Registers {
     type Error;
@@ -40,8 +51,9 @@ pub enum Error<E> {
     InvalidPort,
     MissingNvm,
     InvalidMac,
-    /// SW_FW_SYNC resource (or SWSM.SMBI / REGSMP) still held by firmware or
-    /// another driver after the bounded wait; never taken from its owner.
+    /// SW_FW_SYNC resource (or SWSM.SMBI / SWESMBI / REGSMP) still held by
+    /// firmware or another driver after the bounded wait; never taken from
+    /// its owner (spec 1.4.3 policy, section 10 item 15).
     Semaphore { held: u32 },
     /// IOSF sideband access to the X552 KR PHY returned an error response.
     Sideband { address: u32, ctrl: u32 },
@@ -51,12 +63,32 @@ pub enum Error<E> {
     Cs4227 { register: u16, value: u16 },
     /// No external PHY answered on MDIO.
     NoPhy,
+    /// PHY soft reset (4.0x0000 bit 15) still set after 3 s (spec 2.6).
+    PhyReset,
+    /// 82599: the NVM has no init sequence for this module type (spec 5.5).
+    NoInitSequence { key: u16 },
+    /// 82599: the AN state (ANLP1 19:16) never left 0 in a pipeline reset (spec 5.4).
+    PipelineReset,
 }
 
+#[path = "sync.rs"]
+pub mod sync;
+#[path = "mdio.rs"]
+pub mod mdio;
+#[path = "i2c.rs"]
+pub mod i2c;
+#[path = "sfp.rs"]
+pub mod sfp;
+#[path = "f82599.rs"]
+pub mod f82599;
+#[path = "x540.rs"]
+pub mod x540;
 #[path = "x552.rs"]
 pub mod x552;
 
-fn read<R: Registers>(io: &mut R, reg: u32) -> Result<u32, Error<R::Error>> {
+type R<T, E> = Result<T, Error<E>>;
+
+fn read<Io: Registers>(io: &mut Io, reg: u32) -> R<u32, Io::Error> {
     let value = io.read(reg).map_err(Error::Io)?;
     // These status/control registers cannot legitimately have all bits set.
     // Do not interpret a disappeared PCI function as reset/NVM/link success.
@@ -64,13 +96,20 @@ fn read<R: Registers>(io: &mut R, reg: u32) -> Result<u32, Error<R::Error>> {
     Ok(value)
 }
 
-fn write<R: Registers>(io: &mut R, reg: u32, value: u32) -> Result<(), Error<R::Error>> {
+fn write<Io: Registers>(io: &mut Io, reg: u32, value: u32) -> R<(), Io::Error> {
     io.write(reg, value).map_err(Error::Io)
 }
 
+/// A read of STATUS so a write reaches the device before a delay starts.
+fn flush<Io: Registers>(io: &mut Io) -> R<(), Io::Error> {
+    io.read(STATUS).map(|_| ()).map_err(Error::Io)
+}
+
+fn delay_ms<Io: Registers>(io: &mut Io, ms: usize) { io.delay_us(ms * 1000); }
+
 /// Poll at 1 ms intervals, including a last read at the deadline.
-fn wait<R: Registers>(io: &mut R, reg: u32, mask: u32, expected: u32,
-    millis: usize) -> Result<u32, Error<R::Error>> {
+fn wait<Io: Registers>(io: &mut Io, reg: u32, mask: u32, expected: u32,
+    millis: usize) -> R<u32, Io::Error> {
     for elapsed in 0..=millis {
         let value = read(io, reg)?;
         if value & mask == expected { return Ok(value); }
@@ -82,7 +121,7 @@ fn wait<R: Registers>(io: &mut R, reg: u32, mask: u32, expected: u32,
     unreachable!()
 }
 
-fn mask_interrupts<R: Registers>(io: &mut R) -> Result<(), Error<R::Error>> {
+fn mask_interrupts<Io: Registers>(io: &mut Io) -> R<(), Io::Error> {
     write(io, EIMC, 0x7fff_ffff)?;
     write(io, 0x00ab0, u32::MAX)?;
     write(io, 0x00ab4, u32::MAX)
@@ -93,10 +132,19 @@ fn rxdctl(queue: u32) -> u32 {
     else { 0x0d028 + (queue - 64) * 0x40 }
 }
 
+/// Controller family (spec 1.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family { F82599, X540, X552 }
+
+/// The function being brought up: its family, device ID and port number
+/// (STATUS.LAN_ID, spec 1.3: every per-port choice uses it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Port { pub family: Family, pub device: u16, pub lan: u8 }
+
 /// Stop host reception and drain outstanding PCIe requests before reset.
 /// A drain timeout fails closed; no forced reset or stealing another owner's
 /// semaphore is attempted. Interrupts and reception remain disabled on error.
-pub fn quiesce<R: Registers>(io: &mut R) -> Result<(), Error<R::Error>> {
+pub fn quiesce<Io: Registers>(io: &mut Io) -> R<(), Io::Error> {
     if read(io, STATUS)? & (1 << 18) != 0 {
         return Err(Error::VirtualizationActive);
     }
@@ -132,34 +180,82 @@ pub fn quiesce<R: Registers>(io: &mut R) -> Result<(), Error<R::Error>> {
     Ok(())
 }
 
+/// The port number (spec 1.3), then `quiesce`. Nothing is reset yet.
+pub fn begin<Io: Registers>(io: &mut Io) -> R<u8, Io::Error> {
+    let lan = ((read(io, STATUS)? >> 2) & 3) as u8;
+    if lan > 1 { return Err(Error::InvalidPort); }
+    quiesce(io)?;
+    Ok(lan)
+}
+
+/// MMNGC.MNG_VETO (spec 1.5), read once before any disruptive step. While
+/// set: no PHY reset, no PHY AN restart, no 82599 AUTOC write, no X552 KR
+/// setup, and the SFP+ laser is not dropped.
+pub fn veto<Io: Registers>(io: &mut Io) -> R<bool, Io::Error> {
+    Ok(read(io, MMNGC)? & MNG_VETO != 0)
+}
+
+/// The PHY or module steps before the MAC reset (spec 9.1, 9.3, 9.4, 9.8, 9.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prepared {
+    F82599(f82599::Prepared),
+    X540,
+    X552(x552::Prepared),
+}
+
+pub fn prepare<Io: Registers>(io: &mut Io, port: Port, veto: bool) -> R<Prepared, Io::Error> {
+    Ok(match port.family {
+        Family::F82599 => Prepared::F82599(f82599::prepare(io, port, veto)?),
+        Family::X540 => Prepared::X540,
+        Family::X552 => Prepared::X552(x552::prepare(io, port, veto)?),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
     pub lan: u8,
     /// NVM-provisioned address reloaded into RAR0 by this reset. Never taken
     /// from RAR0 before reset, where an earlier driver may have replaced it.
     pub mac: [u8; 6],
+    /// The reset used: CTRL.RST (link was up, or X540) or CTRL.LNK_RST.
+    pub link_reset: bool,
 }
 
-/// Global software + link reset, NVM completion, and per-port MAC retrieval.
-/// Leaves all host interrupts masked and RX/TX disabled by reset. Does not
-/// configure the PHY or claim a network interface is ready.
-pub fn reset<R: Registers>(io: &mut R) -> Result<Identity, Error<R::Error>> {
-    let lan = ((read(io, STATUS)? >> 2) & 3) as u8;
-    if lan > 1 { return Err(Error::InvalidPort); }
-    quiesce(io)?;
+/// MAC reset (spec 5.13, 6.7, 7.11), NVM completion, and the per-port MAC.
+///
+/// CTRL.LNK_RST when the link is down, CTRL.RST when it is up (a link reset
+/// could reset a PHY manageability is using); the X540 always uses RST. The
+/// X540 and the X552 10G_T and SFP devices reset holding their PHY semaphore
+/// (spec 1.4.4). Leaves all host interrupts masked and RX/TX disabled.
+pub fn reset<Io: Registers>(io: &mut Io, port: Port) -> R<Identity, Io::Error> {
+    let up = read(io, LINKS)? & LINK_UP != 0;
+    let bits = if port.family == Family::X540 || up { RST } else { LNK_RST };
+    let mask = match port.family {
+        Family::F82599 => 0,
+        Family::X540 => sync::phy(port.lan),
+        Family::X552 => x552::reset_mask(port),
+    };
     let ctrl = read(io, CTRL)?;
-    write(io, CTRL, ctrl | RESET)?;
+    if mask != 0 { sync::acquire(io, port, mask)?; }
+    let written = write(io, CTRL, ctrl | bits);
     // Datasheet forbids even a flush read in the first millisecond.
     io.delay_us(1000);
-    wait(io, CTRL, RESET, 0, 100)?;
-    io.delay_us(10_000);
+    if mask != 0 { sync::release(io, port, mask)?; }
+    written?;
+    wait(io, CTRL, RST | LNK_RST, 0, 100)?;
+    delay_ms(io, if port.family == Family::X540 { 100 } else { 50 });
     mask_interrupts(io)?;
     let eec = wait(io, EEC, 1 << 9, 1 << 9, 1000)?;
     // AUTO_RD also sets for absent or invalid NVM; require EE_PRES as well.
     if eec & (1 << 8) == 0 { return Err(Error::MissingNvm); }
-    let cfg = 1 << (18 + lan);
+    let cfg = 1 << (18 + port.lan);
     wait(io, EEMNGCTL, cfg, cfg, 1000)?;
     wait(io, RDRXCTL, 1 << 3, 1 << 3, 1000)?;
+    match port.family {
+        Family::F82599 => f82599::after_reset(io)?,
+        Family::X540 => {}
+        Family::X552 => x552::after_reset(io, port)?,
+    }
     // Unlike control/status registers, RAL can legitimately be all ones.
     let low = io.read(RAL0).map_err(Error::Io)?.to_le_bytes();
     let high = read(io, RAH0)?;
@@ -167,75 +263,114 @@ pub fn reset<R: Registers>(io: &mut R) -> Result<Identity, Error<R::Error>> {
     if high & (1 << 31) == 0 || mac == [0; 6] || mac[0] & 1 != 0 {
         return Err(Error::InvalidMac);
     }
-    Ok(Identity { lan, mac })
+    Ok(Identity { lan: port.lan, mac, link_reset: bits == LNK_RST })
+}
+
+/// One 16-bit NVM word through EERD (82599 datasheet 8.2.3.2.2: bit 0
+/// START, bit 1 DONE, bits 15:2 word address, bits 31:16 data).
+pub fn nvm_word<Io: Registers>(io: &mut Io, word: u32) -> R<u16, Io::Error> {
+    write(io, EERD, (word & 0x3fff) << 2 | 1)?;
+    let mut last = 0;
+    for _ in 0..10_000 {
+        last = read(io, EERD)?;
+        if last & 2 != 0 { return Ok((last >> 16) as u16); }
+        io.delay_us(10);
+    }
+    Err(Error::Timeout { register: EERD, mask: 2, expected: 2, last })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setup {
+    F82599(f82599::Setup),
+    X540(x540::Setup),
+    X552(x552::Setup),
+}
+
+/// Link setup after `reset`, per family (spec 9).
+pub fn setup_link<Io: Registers>(io: &mut Io, port: Port, veto: bool, prepared: Prepared)
+    -> R<Setup, Io::Error> {
+    Ok(match prepared {
+        Prepared::F82599(p) => Setup::F82599(f82599::setup(io, port, veto, p)?),
+        Prepared::X540 => Setup::X540(x540::setup(io, port, veto)?),
+        Prepared::X552(p) => Setup::X552(x552::setup(io, port, veto, p)?),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Link {
     Down,
-    /// None means link is up but the speed encoding is reserved, not 0 Mb/s.
+    /// Full duplex (spec 8.1). None: up, but the speed encoding is reserved.
     Up { megabits: Option<u32> },
 }
 
-/// Read the current LINK_UP bit, not the latched historical LINK_STATUS bit.
-/// A cable unplugged is a normal state, not a bring-up timeout.
-pub fn link<R: Registers>(io: &mut R) -> Result<Link, Error<R::Error>> {
+/// LINKS (spec 8.1): the current LINK_UP bit, not the latched history. A
+/// cable unplugged is a normal state, not a bring-up timeout. Bits 29:28
+/// are the speed; on the X552, `11` with NON_STD (bit 27) is 2.5G.
+pub fn link<Io: Registers>(io: &mut Io, family: Family) -> R<Link, Io::Error> {
     let value = read(io, LINKS)?;
-    if value & (1 << 30) == 0 { return Ok(Link::Down); }
+    if value & LINK_UP == 0 { return Ok(Link::Down); }
     let megabits = match (value >> 28) & 3 {
-        1 => Some(100), 2 => Some(1000), 3 => Some(10_000), _ => None,
+        1 => Some(100),
+        2 => Some(1000),
+        3 if family == Family::X552 && value & (1 << 27) != 0 => Some(2500),
+        3 => Some(10_000),
+        _ => None,
     };
     Ok(Link::Up { megabits })
 }
 
-/// Controller family; the link setup differs, the reset above does not
-/// (EEC, EEMNGCTL, RDRXCTL, RAR0 and LINKS share offsets in all three).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Family { F82599, X540, X552 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Setup {
-    /// 82599: the NVM-loaded AUTOC/AUTOC2 were applied with Restart_AN.
-    /// ESDP is read only for the console: SFP+ TX_DISABLE/MOD_ABS pins.
-    Restarted { autoc: u32, autoc2: u32, esdp: u32 },
-    /// X540: the integrated PHY negotiates from its NVM image; nothing written.
-    PhyAutonomous,
-    /// X552: per-device PHY setup (`x552::setup`).
-    X552(x552::Setup),
+/// How long to wait for link: copper (10GBASE-T AN and training take
+/// seconds) gets the shared code's 9 s; fiber and backplane 3 s (spec 8.1,
+/// 9.1, 9.5).
+pub fn link_budget_ms(port: Port) -> usize {
+    let copper = match port.family {
+        Family::F82599 => f82599::media(port.device) == f82599::Media::Copper,
+        Family::X540 => true,
+        Family::X552 => port.device == 0x15ad,
+    };
+    if copper { 9000 } else { 3000 }
 }
 
-/// Link setup after `reset`, per family.
-///
-/// 82599 (datasheet 4.6.3.2, 4.6.4, 3.7.4.4): the link interconnect and link
-/// mode (AUTOC.LMS and PMA/PMD fields, AUTOC2.10G_PMA_PMD_Serial) are loaded
-/// from the NVM, which describes the board's media; software applies them
-/// with AUTOC.Restart_AN. They are not rewritten here: the NVM is the only
-/// source of what the board wires to the MAC. SDPs (SFP+ TX_DISABLE and
-/// module presence) are board-specific (Table 3-13 is an example) and
-/// preserved across resets, so they are left as firmware set them.
-///
-/// X540 (datasheet 3.6.3.2, 4.6.2): the NVM holds enough to bring the link
-/// up; the PHY auto-negotiates by itself and software only changes its
-/// settings to depart from the defaults. No MDIO write is made.
-///
-/// X552: depends on the PHY behind the MAC, so on the device ID; see `x552`.
-pub fn setup_link<R: Registers>(io: &mut R, family: Family, device: u16, lan: u8)
-    -> Result<Setup, Error<R::Error>> {
-    match family {
-        Family::F82599 => {
-            let autoc = read(io, AUTOC)?;
-            let autoc2 = read(io, AUTOC2)?;
-            let esdp = read(io, ESDP)?;
-            write(io, AUTOC, autoc | RESTART_AN)?;
-            Ok(Setup::Restarted { autoc, autoc2, esdp })
+/// What `wait_link` saw: the MAC link, and on the X552 10G_T the copper side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Waited {
+    pub link: Link,
+    pub copper: Option<x552::Copper>,
+    /// X552 10G_T: times the internal link was re-forced to the copper speed.
+    pub reforced: u32,
+}
+
+/// Poll every 100 ms for up to `millis` (spec 8.1, 9). Link down at the end
+/// is a result, not an error. `setup` is None when link setup was skipped or
+/// failed: then only LINKS is read ("hands off", spec 1.4.3).
+pub fn wait_link<Io: Registers>(io: &mut Io, port: Port, setup: Option<&Setup>, millis: usize)
+    -> R<Waited, Io::Error> {
+    let mut watch = match setup {
+        Some(Setup::X552(x552::Setup::Copper { phy, internal, .. })) => Some(x552::Watch::new(*phy, *internal)),
+        _ => None,
+    };
+    let crosstalk = matches!(setup, Some(Setup::F82599(f82599::Setup::Module { crosstalk: true, .. })));
+    let mut elapsed = 0;
+    loop {
+        let mut copper = None;
+        let mut state = if crosstalk { f82599::link(io, true)? } else { link(io, port.family)? };
+        if let Some(w) = watch.as_mut() {
+            let c = w.poll(io, port)?;
+            // Spec 7.8.6: up only when LINKS and the X557 both say so.
+            if !matches!(c, x552::Copper::Up { .. }) { state = Link::Down; }
+            copper = Some(c);
         }
-        Family::X540 => Ok(Setup::PhyAutonomous),
-        Family::X552 => Ok(Setup::X552(x552::setup(io, device, lan)?)),
+        let reforced = watch.as_ref().map_or(0, |w| w.reforced);
+        if matches!(state, Link::Up { .. }) || elapsed >= millis {
+            return Ok(Waited { link: state, copper, reforced });
+        }
+        delay_ms(io, 100);
+        elapsed += 100;
     }
 }
 
-/// The 82599 link mode AUTOC/AUTOC2 select, for the console (AUTOC.LMS,
-/// datasheet 8.2.3.22.19; 10G_PMA_PMD_Serial, 8.2.3.22.22).
+/// The 82599 link mode AUTOC/AUTOC2 select, for the console (AUTOC.LMS and
+/// AUTOC2 10G PMA/PMD, spec 5.1, 5.2).
 pub fn link_mode(autoc: u32, autoc2: u32) -> &'static str {
     match (autoc >> 13) & 7 {
         0 if autoc & (1 << 9) == 0 => "1G SFI",
@@ -249,6 +384,7 @@ pub fn link_mode(autoc: u32, autoc2: u32) -> &'static str {
         2 => "1G BX, clause 37 AN",
         3 => match (autoc2 >> 16) & 3 {
             0 => "10G KR, no AN",
+            1 => "10G XFI",
             2 => "10G SFI",
             _ => "10G serial (reserved PMA/PMD)",
         },
@@ -256,17 +392,5 @@ pub fn link_mode(autoc: u32, autoc2: u32) -> &'static str {
         5 => "SGMII 100M/1G",
         6 => "KX/KX4/KR AN + 1G clause 37 AN",
         _ => "KX/KX4/KR AN + SGMII",
-    }
-}
-
-/// Poll `link` every 10 ms for up to `millis`; link down at the end is a
-/// result, not an error (no cable, or the partner is still negotiating).
-pub fn wait_link<R: Registers>(io: &mut R, millis: usize) -> Result<Link, Error<R::Error>> {
-    let mut elapsed = 0;
-    loop {
-        let state = link(io)?;
-        if matches!(state, Link::Up { .. }) || elapsed >= millis { return Ok(state); }
-        io.delay_us(10_000);
-        elapsed += 10;
     }
 }

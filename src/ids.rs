@@ -2,10 +2,12 @@
 //! functions of the 82599, X540 and X552 families.
 //!
 //! Device IDs from the Intel datasheets (82599 10 GbE Controller Datasheet,
-//! X540 Datasheet, Xeon D-1500 / X552 datasheet) and, for the board variants
-//! the datasheets leave to the adapter, the PCI ID registry.
-//! Virtual functions (82599 10ed, X540 1515, X552 15a8) are not listed: a
-//! VF has no PHY of its own and is not what firmware boots from.
+//! X540 Datasheet, Xeon D-1500 / X552 datasheet), the PCI ID registry for
+//! board variants, and docs/spec/phy.md 1.2, which lists 26 physical
+//! functions. 25 are here. 82599_LS (154f) is left out: the shared code has
+//! no MAC type for it and its identification path is unclear (spec 10
+//! item 2). Virtual functions (82599 10ed, 152e; X540 1515, 1530; X552
+//! 15a8, 15a9) are not listed: a VF has no PHY access and must not be bound.
 
 pub const INTEL: u16 = 0x8086;
 
@@ -37,15 +39,18 @@ pub const SUPPORTED: &[Nic] = &[
     Nic { device: 0x154d, name: "82599 SFP+ SF2", family: Family::F82599 },
     Nic { device: 0x1557, name: "82599EN SFP+", family: Family::F82599 },
     Nic { device: 0x1558, name: "82599 QSFP+", family: Family::F82599 },
+    Nic { device: 0x155d, name: "82599 bypass", family: Family::F82599 },
     // X540
     Nic { device: 0x1528, name: "X540-T", family: Family::X540 },
     Nic { device: 0x1560, name: "X540-T1", family: Family::X540 },
+    Nic { device: 0x155c, name: "X540 bypass", family: Family::X540 },
     // X552 (Xeon D-1500)
-    Nic { device: 0x15aa, name: "X552 backplane", family: Family::X552 },
-    Nic { device: 0x15ab, name: "X552 backplane", family: Family::X552 },
+    Nic { device: 0x15aa, name: "X552 KX4", family: Family::X552 },
+    Nic { device: 0x15ab, name: "X552 KR", family: Family::X552 },
     Nic { device: 0x15ac, name: "X552 SFP+", family: Family::X552 },
     Nic { device: 0x15ad, name: "X552/X557-AT 10GBASE-T", family: Family::X552 },
     Nic { device: 0x15ae, name: "X552 1000BASE-T", family: Family::X552 },
+    Nic { device: 0x15b0, name: "X552 XFI", family: Family::X552 },
 ];
 
 pub fn lookup(vendor: u16, device: u16) -> Option<&'static Nic> {
