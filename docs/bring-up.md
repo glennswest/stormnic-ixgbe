@@ -1,9 +1,10 @@
 # Bring-up implementation notes (#2)
 
 The shared primitives in `src/hardware.rs` are compiled into the UEFI source
-module tree, but Start does not call them yet. The PHY scope decision and link
-setup must be resolved before binding integration. No new hardware support is
-claimed by this checkpoint.
+module tree, but Start does not call them yet. The owner requires all 22 matched
+PCI IDs (decision recorded on #2 on 2026-09-28). Link setup and binding
+integration remain unfinished; the documentation gap below needs owner input.
+No new hardware support is claimed by this checkpoint.
 
 ## Vendor sources
 
@@ -65,3 +66,38 @@ Remote verification on 2026-09-28 at `fed1c3b`: all 10 tests passed; the
 release driver passed the x86_64 PE32+ subsystem-11 check (25,600 bytes).
 The remote job exited 0. The wrapper subsequently reported that its local
 `runs.jsonl` was read-only; no host changes were attempted.
+
+
+## All-variant documentation audit (2026-09-29)
+
+The scope decision is resolved; this is a source-documentation dependency,
+not a request to reduce the supported PCI ID list.
+
+The public Xeon D-1500 volume 4 revision 004 identifies external PHYs in
+section 9.2.2.2: CS4227 for 15ac, X557-AT2 for 15ad, and Marvell
+88E1512/88E1514 for 15ae. Appendix B.5.1 specifies KR/KX advertisement and
+restart fields in `KRM_KR_PCS_PORT<n>.LINK_CNTL_1`, but the register's numeric
+address was not found in this document. Its reference to section 3.8.1
+loops back to Appendix B. Sections 8.2.2.11.1–2 describe the indirect access
+transport, not the missing destination register map. Revision history also
+removes KX4 support; 15aa needs a source for its older silicon path.
+
+[Inphi reference-design technical note 451265, revision 1.0](https://community.intel.com/cipcp26785/attachments/cipcp26785/processors/43175/1/451265_Intel_CPU_Reference_Design_Procedure_Rev1p0_14Jul2015.pdf)
+identifies a CS4227 datasheet and Intel EEPROM Operational Guidelines as
+separate vendor-provided documents (page 3). Its example register discussion
+is tied to PHY firmware versions and refers to those guidelines for details
+(page 5); it is insufficient to implement the complete reset, module-mode
+selection, and completion sequence. The full programming documents were not
+located in the public-source search. This is not proof that they are unavailable.
+
+Needed to resume the all-variant implementation: a vendor source for the X552
+internal PHY register addresses (including the matched older variant), and
+CS4227 programming documentation suitable for use in this MIT project.
+Do not guess addresses, treat NVM defaults as complete PHY setup, or present
+MAC-to-PHY link status as proof of external media link. Once sources are
+available, finish auditing X557 and Marvell initialization as well, implement
+the distinct PHY paths and PCI lifetime handling, and extend remote tests.
+The audit has not established that these are the only remaining source gaps.
+
+No driver code changed during this audit. The feature and version bump remain
+pending, and #2 must stay open.
