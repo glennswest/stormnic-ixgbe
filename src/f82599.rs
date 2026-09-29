@@ -131,11 +131,13 @@ pub enum Setup {
     /// is false when AUTOC already matched (the usual case); `an_complete`
     /// is the KX_AN_COMP wait in AN modes after a write.
     Backplane { autoc: u32, autoc2: u32, written: bool, an_complete: Option<bool> },
-    /// SFP+/QSFP+. For a supported module: `sequence` CORECTL words from
-    /// the NVM, AUTOC as it ended up, the laser, the speed the link came up
+    /// SFP+/QSFP+. `nvm_autoc` is the snapshot after the MAC reset (the NVM
+    /// default every capability decision reads, spec 5.6, 5.13). For a
+    /// supported module: `sequence` CORECTL words from the NVM, AUTOC as it
+    /// ended up, the laser, the speed the link came up
     /// at while setting it up (multispeed) and the SFI firmware patch version.
     Module {
-        module: Module, autoc: u32, autoc2: u32, sequence: Option<usize>, laser: Laser,
+        module: Module, nvm_autoc: u32, autoc: u32, autoc2: u32, sequence: Option<usize>, laser: Laser,
         speed: Option<u32>, fw: Option<u16>, crosstalk: bool, rate_select: bool,
     },
     /// T3 LOM: TN1010 advertisement and AN restart, then the MAC side restarted.
@@ -397,7 +399,7 @@ fn multispeed<Io: Registers>(io: &mut Io, ctx: &Ctx, st: &mut Speedy, s: Speeds)
 fn module_setup<Io: Registers>(io: &mut Io, ctx: &Ctx, m: Module, autoc2: u32) -> R<Setup, Io::Error> {
     let media = media(ctx.port.device);
     let mut setup = Setup::Module {
-        module: m, autoc: ctx.orig, autoc2, sequence: None, laser: Laser::None, speed: None,
+        module: m, nvm_autoc: ctx.orig, autoc: ctx.orig, autoc2, sequence: None, laser: Laser::None, speed: None,
         fw: None, crosstalk: false, rate_select: true,
     };
     if !m.supported(Family::F82599) { return Ok(setup); }

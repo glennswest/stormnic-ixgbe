@@ -392,9 +392,9 @@ fn log_82599(at: &impl core::fmt::Display, dev: u16, setup: &f82599::Setup) {
             module(m),
             if m.present() { ", not supported; link not set up" } else { "" }
         ),
-        f82599::Setup::Module { module: ref m, autoc, autoc2, sequence: Some(words), laser, speed, fw, crosstalk, rate_select } => {
+        f82599::Setup::Module { module: ref m, nvm_autoc, autoc, autoc2, sequence: Some(words), laser, speed, fw, crosstalk, rate_select } => {
             println!(
-                "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}, NVM init sequence {words} words, {} (AUTOC {autoc:08x} AUTOC2 {autoc2:08x}), laser {}{}{}",
+                "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}, NVM init sequence {words} words, {} (NVM AUTOC {nvm_autoc:08x}, now AUTOC {autoc:08x} AUTOC2 {autoc2:08x}), laser {}{}{}",
                 module(m),
                 hardware::link_mode(autoc, autoc2),
                 match laser {
