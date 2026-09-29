@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-09-29
+- **docs:** Resume #2 with the owner-approved all-22-ID scope and record the vendor-documentation audit, integration, and remote verification plan.
+
 ### 2026-09-28
 - **docs:** Record successful remote verification of the #2 common primitives (10 tests and UEFI PE check at fed1c3b); leave PHY setup and binding integration pending the owner support-scope decision.
 - **refactor:** Add datasheet-based, UEFI-independent reset, NVM-provisioned MAC, and current link-status primitives with bounded failure paths and simulated-register tests for #2; binding integration awaits PHY scope resolution.
