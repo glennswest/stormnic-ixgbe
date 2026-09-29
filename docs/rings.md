@@ -1,8 +1,8 @@
 # Descriptor rings and DMA (#3)
 
 `src/rings.rs` (the `hardware::rings` module) gives the NIC one receive and
-one transmit queue with DMA through `EFI_PCI_IO_PROTOCOL`. The SNP (#4) will
-use it for Transmit, Receive, GetStatus and ReceiveFilters. Like the rest of
+one transmit queue with DMA through `EFI_PCI_IO_PROTOCOL`. The SNP (#4,
+[docs/snp.md](snp.md)) uses it for Transmit, Receive, GetStatus and ReceiveFilters. Like the rest of
 `hardware`, it doesn't depend on UEFI: the caller passes in a mapped region
 and `Registers`, and `test/rings.rs` runs it against a simulated NIC that
 does DMA.
@@ -94,10 +94,10 @@ failed Start restore the original attributes. After bring-up, Start:
    - it listens up to 3 s for any frame (broadcast, or to the NIC's own MAC)
      and logs the first one;
    - it logs GPTC/GPRC;
-4. stops the rings. Without an SNP (#4) nothing may keep DMA running into
-   memory that the OS could reuse after ExitBootServices. The region stays
-   mapped in `Bound` for the SNP. Stop stops the rings again, then unmaps and
-   frees the region.
+4. stops the rings. Nothing DMAs until the SNP's Initialize starts them
+   again, and its ExitBootServices event stops them, so no DMA runs into
+   memory the OS could reuse. The rings move into the SNP (`snp::Port`,
+   #4). Stop stops the rings again, then unmaps and frees the region.
 
 If the queues can't be stopped (the device is gone, or a queue never
 disables), the region is **never freed**: the NIC might still write to it.
@@ -147,7 +147,8 @@ What to check:
 the 43 bring-up tests and 13 new ring tests passed. The release image is
 x86_64 PE32+, subsystem 11, 88,576 bytes. The driver build has no warnings.
 
-The simulated NIC in `test/rings.rs`:
+The simulated NIC (in `test/rings.rs` at 9abdc9a; since #4 in `test/sim.rs`,
+shared with `test/snp.rs`):
 - fetches TX descriptors and buffers through the device address on a TDT
   write, checks CMD, writes DD and counts GPTC;
 - applies FCTRL and RAR0 filtering;

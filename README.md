@@ -69,7 +69,7 @@ versions (`uefi` 0.39.0, `uefi-raw` 0.15.1). Updating a dependency is a
 deliberate change to `Cargo.lock` in its own commit.
 
 The image is `target/x86_64-unknown-uefi/release/stormnic-ixgbe.efi`, about
-90 KB. `build.rs` adds `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER` to the link. The
+100 KB. `build.rs` adds `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER` to the link. The
 release profile is size-optimised (`opt-level = "z"`, LTO, `panic = "abort"`,
 stripped).
 
@@ -135,16 +135,24 @@ driver on its media, then calls the binding for each controller:
   6. maps the descriptor rings and buffers for DMA, starts RX/TX queue 0,
      and, if the link is up, runs the DMA check: one broadcast frame sent,
      up to 3 s listening for any frame, GPTC/GPRC logged. Then it stops the
-     queues again, so nothing DMAs until the SNP (#4) starts them. See
-     [descriptor rings and DMA](docs/rings.md).
+     queues again, so nothing DMAs until the SNP is initialized. See
+     [descriptor rings and DMA](docs/rings.md);
+  7. installs `EFI_SIMPLE_NETWORK_PROTOCOL` and a device path (the
+     controller's, plus a MAC address node) on a **child handle**, which
+     opens the controller's PciIo BY_CHILD_CONTROLLER. The firmware's MNP
+     binds to the child; the SNP's Initialize starts the queues. An
+     ExitBootServices event stops them again. See
+     [Simple Network Protocol](docs/snp.md).
 
   A PCI I/O error or a removed device fails Start: it restores the
   attributes, releases PciIo and returns DEVICE_ERROR. A PHY or link step
   that fails otherwise is logged and skipped, and Start reports link from
   LINKS alone. Examples: a semaphore firmware holds (never taken from it),
   no PHY, an I2C or sideband error, no NVM init sequence.
-- **Stop** stops the queues, unmaps and frees the DMA region, restores the
-  PCI attributes and drops the PciIo open. If the queues can't be stopped,
+- **Stop** with the child uninstalls the SNP and device path from it (and
+  fails, keeping it, while MNP still holds the SNP). Stop without children
+  stops the queues, unmaps and frees the DMA region, restores the PCI
+  attributes and drops the PciIo open. If the queues can't be stopped,
   bus mastering is disabled and the region is left allocated (never freed
   under a NIC that might still write to it).
 
@@ -155,12 +163,17 @@ AllocateBuffer/Map/Unmap/FreeBuffer for the DMA region.
 
 `src/hardware.rs` (with `src/rings.rs`) is independent of UEFI and has
 standalone simulated-device test harnesses (`test/hardware.rs`,
-`test/rings.rs`; `sc-build scripts/test-hardware.sh`).
+`test/rings.rs`, `test/snp.rs` with the DMA-capable NIC in `test/sim.rs`;
+`sc-build scripts/test-hardware.sh`). `src/snp_core.rs` (`hardware::snp`) is
+the SNP's UEFI-independent state machine.
 
-There is **no SNP yet** (#4), so a bound NIC has no network handle; the
-rings exist but only the DMA check runs them. **Until #4 lands, don't put this driver on media next
-to `ipxe-intelx.efi`:** whichever driver binds first holds the NIC, and if
-it's this one, the NIC has no SNP.
+The driver installs its own `EFI_DRIVER_BINDING_PROTOCOL` (`src/binding.rs`)
+rather than the `uefi` crate's `driver::install`, which refuses Stop with
+children.
+
+**Don't put this driver on media next to `ipxe-intelx.efi`:** whichever
+binds a NIC first holds it, and which one that is depends on load order.
+Retiring iPXE's driver is #5 (stormbootx#27), after the server1 check.
 
 ### Console output
 
@@ -220,7 +233,15 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA region released; releasing` | Start, after `rings failed` (returns DEVICE_ERROR) |
 | `stormnic-ixgbe: LOC: could not stop DMA: ERROR; bus mastering disabled\|could not be disabled, DMA region kept allocated` | Start or Stop, the queues would not stop |
 | `stormnic-ixgbe: could not unmap\|free the DMA region: STATUS` | Stop or failed Start |
-| `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound (no SNP yet)` | Start, success |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound, SNP on a child handle, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Start, success |
+| `stormnic-ixgbe: LOC 8086:DDDD: SNP not installed: STATUS; releasing` | Start, the child handle could not be made (returns DEVICE_ERROR) |
+| `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | SNP Initialize (MNP's first use) |
+| `stormnic-ixgbe: LOC: SNP receive filters 0xNN, N multicast address(es)` | SNP ReceiveFilters changed the setting or set a list |
+| `stormnic-ixgbe: LOC: SNP station address xx:xx:xx:xx:xx:xx` | SNP StationAddress |
+| `stormnic-ixgbe: LOC: SNP shut down` | SNP Shutdown |
+| `stormnic-ixgbe: LOC: SNP CALL failed: ERROR` | an SNP call failed in the NIC (DEVICE_ERROR) |
+| `stormnic-ixgbe: LOC: Stop: SNP child removed` | Stop with the child |
+| `stormnic-ixgbe: LOC: Stop: SNP child still in use (STATUS); kept` | Stop, the SNP is still open (returns DEVICE_ERROR) |
 | `stormnic-ixgbe: LOC 8086:DDDD: Start could not open PciIo BY_DRIVER: STATUS` | Start, failure |
 | `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: STATUS` | Start, failure |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: bring-up failed: ERROR; releasing` | Start, quiesce/reset/NVM/MAC failed or the device went away (returns DEVICE_ERROR); ERROR is e.g. `Timeout { register: .., .. }`, `MissingNvm`, `InvalidMac`, `Removed`, `Io(..)`, or `Semaphore { .. }` when the reset's PHY semaphore is held |
@@ -240,4 +261,8 @@ Descriptor rings and DMA (#3): RX/TX queue 0 with legacy descriptors in one
 mapped region, a DMA check in Start, checked in simulation (13 tests against
 a simulated DMA device) and not yet on hardware; see
 [docs/rings.md](docs/rings.md#hardware-checks-server1server2-80861557).
-Next: SNP (#4), then retire `ipxe-intelx.efi` (#5, stormbootx#27).
+SNP (#4): `EFI_SIMPLE_NETWORK_PROTOCOL` on a child handle with a MAC device
+path, checked in simulation (16 tests) and not yet on hardware; the
+acceptance is `tcp4 : available` on server1 with only this driver, see
+[docs/snp.md](docs/snp.md#hardware-check-the-acceptance-for-4).
+Next: that boot, then retire `ipxe-intelx.efi` (#5, stormbootx#27).

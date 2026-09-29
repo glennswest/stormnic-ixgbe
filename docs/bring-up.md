@@ -334,8 +334,8 @@ Known limits, not claimed as done: an SFP+ module whose speed differs from
 the NVM link mode (a 1G module on a 10G SFI port) is not detected or
 adapted — that needs the SFP I²C module ID, not implemented; link flow
 control is not configured (X540 3.6.3.2.2.2, 82599 4.6.3.2 — left zero
-until the SNP needs it); link is only sampled in Start, the SNP (#4) will
-report it live. The simulated-register tests check register order and
+until the SNP needs it); link is only sampled in Start, the SNP (#4) now
+reports it live (MediaPresent from LINKS in GetStatus). The simulated-register tests check register order and
 bounds; they cannot prove an electrical link.
 
 Remote verification at `025a137`: `sc-build 'scripts/test-hardware.sh &&
@@ -429,7 +429,8 @@ Notice for the source read, as its licence asks:
   module that identifies as a supported type is driven. 1000BASE-T SFPs are
   unsupported (as in Intel's code for this part).
 - Link is followed only during Start; a later copper speed change on 15ad
-  needs the SNP (#4) to re-run `follow_copper`.
+  is not followed. The SNP (#4) reads LINKS in GetStatus but doesn't re-run
+  `follow_copper`.
 - Flow control is not configured on any family.
 
 ### Verification
