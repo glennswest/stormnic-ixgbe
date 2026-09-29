@@ -23,9 +23,14 @@ use uefi::driver::Driver;
 use uefi::proto::device_path::DevicePath;
 use uefi::{println, Handle, Result, Status};
 
+use crate::hardware::x552::{self, Copper, Module};
 use crate::hardware::{self, Link, Registers, Setup};
 use crate::ids::{self, Nic};
 use crate::pci_io::{AttributeOp, Location, PciIo, ATTRIBUTE_MEMORY};
+
+/// How long Start waits for an X557's copper link (10GBASE-T training takes
+/// seconds) before the MAC link wait below.
+const COPPER_WAIT_MS: usize = 5000;
 
 /// How long Start waits for link before reporting it down. Link down is a
 /// result: no cable, or a partner still negotiating (10GBASE-T takes seconds).
@@ -253,7 +258,8 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
         "stormnic-ixgbe: {at} 8086:{dev:04x}: reset, LAN {}, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         id.lan, m[0], m[1], m[2], m[3], m[4], m[5]
     );
-    match hardware::setup_link(&mut io, nic.family)? {
+    let setup = hardware::setup_link(&mut io, nic.family, dev, id.lan)?;
+    match setup {
         Setup::Restarted { autoc, autoc2, esdp } => println!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: NVM mode {} (AUTOC {autoc:08x} AUTOC2 {autoc2:08x} ESDP {esdp:08x}), restarted",
             hardware::link_mode(autoc, autoc2)
@@ -261,9 +267,19 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
         Setup::PhyAutonomous => println!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: integrated PHY auto-negotiates from its NVM image"
         ),
-        Setup::Pending => println!(
-            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: X552 PHY setup not implemented (vendor documentation pending, #2); NVM defaults only"
-        ),
+        Setup::X552(x) => log_x552(&at, dev, x),
+    }
+    if let Setup::X552(x552::Setup::Copper { phy, internal, .. }) = setup {
+        match x552::follow_copper(&mut io, id.lan, phy, internal, COPPER_WAIT_MS)? {
+            Copper::Down => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: copper link down after {COPPER_WAIT_MS} ms"),
+            Copper::Up { megabits, retrained } => println!(
+                "stormnic-ixgbe: {at} 8086:{dev:04x}: copper link up {megabits} Mb/s{}",
+                if retrained { ", internal iXFI re-forced to 1G" } else { "" }
+            ),
+            Copper::Unsupported { status } => println!(
+                "stormnic-ixgbe: {at} 8086:{dev:04x}: copper link up at a speed the internal link cannot carry (AN vendor status {status:04x})"
+            ),
+        }
     }
     match hardware::wait_link(&mut io, LINK_WAIT_MS)? {
         Link::Up { megabits: Some(mb) } => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link up {mb} Mb/s"),
@@ -271,4 +287,42 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
         Link::Down => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link down after {LINK_WAIT_MS} ms"),
     }
     Ok(())
+}
+
+fn log_x552(at: &impl core::fmt::Display, dev: u16, setup: x552::Setup) {
+    match setup {
+        x552::Setup::Kx4 => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: KX4, run by the hardware; nothing written"
+        ),
+        x552::Setup::FirmwarePhy => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: external 1G PHY run by firmware; nothing written"
+        ),
+        x552::Setup::Kr { link_ctrl } => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: KR PHY auto-negotiating KR+KX (LINK_CTRL_1 {link_ctrl:08x}), restarted"
+        ),
+        x552::Setup::ManageabilityVeto => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware"
+        ),
+        x552::Setup::Sfp { module, cs4227_reset, link_ctrl, edc } => {
+            let cs = if cs4227_reset { "CS4227 reset" } else { "CS4227 already reset" };
+            match (module, link_ctrl, edc) {
+                (Module::Absent, ..) => println!(
+                    "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {cs}; no SFP+ module"
+                ),
+                (Module::Unsupported { identifier, comp_10g, comp_1g, cable }, ..) => println!(
+                    "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {cs}; unsupported SFP module (id {identifier:02x}, 10G {comp_10g:02x}, 1G {comp_1g:02x}, cable {cable:02x}); link not set up"
+                ),
+                (m, Some(lc1), Some(edc)) => println!(
+                    "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {cs}; SFP {m:?}, KR PHY {} (LINK_CTRL_1 {lc1:08x}), CS4227 EDC {}",
+                    if lc1 & (1 << 18) != 0 { "10G" } else { "1G" },
+                    if edc == 2 { "CX1" } else { "SR" }
+                ),
+                (m, ..) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {cs}; SFP {m:?}"),
+            }
+        }
+        x552::Setup::Copper { phy, id, unstalled, internal } => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: X557 PHY {id:08x} at MDIO {phy}{}, internal link {internal:?}",
+            if unstalled { ", power-up stall released" } else { "" }
+        ),
+    }
 }

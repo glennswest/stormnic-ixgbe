@@ -1,4 +1,5 @@
-//! Datasheet-only bring-up primitives; see docs/bring-up.md for provenance.
+//! Bring-up primitives from the datasheets (X552 PHY setup from Intel's
+//! BSD-licensed shared code, `x552`); see docs/bring-up.md for provenance.
 //!
 //! Kept independent of UEFI so failure sequences can be tested without a NIC.
 //! The caller owns PciIo BY_DRIVER, enables BAR memory access, and supplies
@@ -39,7 +40,21 @@ pub enum Error<E> {
     InvalidPort,
     MissingNvm,
     InvalidMac,
+    /// SW_FW_SYNC resource (or SWSM.SMBI / REGSMP) still held by firmware or
+    /// another driver after the bounded wait; never taken from its owner.
+    Semaphore { held: u32 },
+    /// IOSF sideband access to the X552 KR PHY returned an error response.
+    Sideband { address: u32, ctrl: u32 },
+    /// No ACK from I2C device `device` (8-bit address) after retries.
+    I2c { device: u8 },
+    /// CS4227 reset did not load its image (register and last value read).
+    Cs4227 { register: u16, value: u16 },
+    /// No external PHY answered on MDIO.
+    NoPhy,
 }
+
+#[path = "x552.rs"]
+pub mod x552;
 
 fn read<R: Registers>(io: &mut R, reg: u32) -> Result<u32, Error<R::Error>> {
     let value = io.read(reg).map_err(Error::Io)?;
@@ -185,8 +200,8 @@ pub enum Setup {
     Restarted { autoc: u32, autoc2: u32, esdp: u32 },
     /// X540: the integrated PHY negotiates from its NVM image; nothing written.
     PhyAutonomous,
-    /// X552: no link-setup write; the vendor PHY documentation is missing (#2).
-    Pending,
+    /// X552: per-device PHY setup (`x552::setup`).
+    X552(x552::Setup),
 }
 
 /// Link setup after `reset`, per family.
@@ -202,7 +217,10 @@ pub enum Setup {
 /// X540 (datasheet 3.6.3.2, 4.6.2): the NVM holds enough to bring the link
 /// up; the PHY auto-negotiates by itself and software only changes its
 /// settings to depart from the defaults. No MDIO write is made.
-pub fn setup_link<R: Registers>(io: &mut R, family: Family) -> Result<Setup, Error<R::Error>> {
+///
+/// X552: depends on the PHY behind the MAC, so on the device ID; see `x552`.
+pub fn setup_link<R: Registers>(io: &mut R, family: Family, device: u16, lan: u8)
+    -> Result<Setup, Error<R::Error>> {
     match family {
         Family::F82599 => {
             let autoc = read(io, AUTOC)?;
@@ -212,7 +230,7 @@ pub fn setup_link<R: Registers>(io: &mut R, family: Family) -> Result<Setup, Err
             Ok(Setup::Restarted { autoc, autoc2, esdp })
         }
         Family::X540 => Ok(Setup::PhyAutonomous),
-        Family::X552 => Ok(Setup::Pending),
+        Family::X552 => Ok(Setup::X552(x552::setup(io, device, lan)?)),
     }
 }
 
