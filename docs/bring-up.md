@@ -1,11 +1,198 @@
-# Bring-up implementation notes (#2)
+# Bring-up implementation notes (#2, #13)
 
 Start runs the sequence below through BAR0 (`src/binding.rs` →
-`src/hardware.rs`, `src/x552.rs`). The owner requires all 22 matched PCI IDs
-(decision recorded on #2 on 2026-09-28). 82599 and X540 link setup are
-implemented from their datasheets; X552 PHY setup from Intel's BSD-licensed
-shared code, after the owner's answer on #2 (see [X552 PHY
-setup](#x552-phy-setup-2026-09-29)). Nothing here has run on hardware yet.
+`src/hardware.rs` and its modules). The owner requires every matched PCI ID
+(decision recorded on #2 on 2026-09-28). Reset and the NVM MAC follow the
+datasheets. **PHY and link programming follows `docs/spec/phy.md`**, the
+independent specification written from Intel's BSD-licensed shared code (#13).
+See [PHY and link programming per the spec](#phy-and-link-programming-per-the-spec-13-2026-09-29),
+which supersedes the earlier 82599/X540 datasheet link setup and the first
+X552 implementation described further down. Nothing here has run on
+hardware yet. The checks to make on server1 are listed in
+[Hardware checks](#hardware-checks-spec-section-10).
+
+## PHY and link programming per the spec (#13, 2026-09-29)
+
+The owner asked for #2's PHY code (8407e3c) to be checked **against
+`docs/spec/phy.md`**, not against the shared code, and fixed where it
+differs. The check found that the 82599 and X540 paths were far from the spec,
+and that the X552 paths differed in order and detail. The code was
+restructured to follow the spec's section 9 walkthroughs. Comments cite spec
+sections ("spec 5.4").
+
+### Modules
+
+| File | Spec | What |
+|---|---|---|
+| `src/hardware.rs` | 1.3, 1.5, 5.13, 6.7, 7.11, 8, 9 | `begin` (port, quiesce), `veto` (MMNGC once), `prepare`, `reset` (per family), `nvm_word` (EERD), `setup_link`, `link`, `wait_link` |
+| `src/sync.rs` | 1.4 | SW/FW semaphores: 82599 SMBI+SWESMBI, X540/X552 SMBI+REGSMP; 200 × 5 ms (82599, X540) or 1000 × 5 ms (X552); release delays; X552 port-1 I2C mux |
+| `src/mdio.rs` | 2 | clause 45 access per register under the port's PHY semaphore; probe/scan (ID with revision masked); generic and X557 PHY reset; 1.0x0004 abilities; the 6.5 advertisement and AN restart; 7.0x0001 read twice |
+| `src/i2c.rs` | 3 | bit-bang with both I2CCTL layouts (0x28 and 0x15F5C); ACK sampled 10 × 1 µs; byte reads 11 (82599) / 4 (X552) attempts, locked per attempt with 100 ms after a failure; writes 2 attempts; 82599 QSFP bus handshake; CS4227 combined read (checksum byte NACKed) and write |
+| `src/sfp.rs` | 4 | SFF-8472 identification in the spec's order (identifier re-read up to 5 times, a failed read is "not present", 10G-BX before BX10), multispeed, support rule, NVM key; QSFP; soft rate select |
+| `src/f82599.rs` | 5, 9.1–9.4 | media by device ID; NVM init sequence into CORECTL under MAC_CSR; protected AUTOC write with pipeline reset and LESM; capabilities; `setup_mac_link`; multispeed; laser; hard/soft rate select; crosstalk link check; TN1010 |
+| `src/x540.rs` | 6, 9.5 | scan, power on (30.0x0000 bit 11), advertise all abilities, restart AN unless vetoed |
+| `src/x552.rs` | 7, 9.6–9.9 | IOSF sideband, KR AN, iXFI, mux, CS4227 check-and-reset, SFP per-speed step and multispeed, X557 unstall/reset/advertise, copper watch |
+
+### Order (spec 9)
+
+1. `begin`: STATUS.LAN_ID, then quiesce (datasheet sequence, unchanged).
+2. `veto`: MMNGC.MNG_VETO, read once. While set: no PHY reset, no AN restart,
+   no 82599 AUTOC write, no X552 KR setup. The laser is still enabled.
+3. `prepare`, the steps the spec puts before the MAC reset:
+   - 82599 SFP+ and bypass: module ID. QSFP: bus handshake set-up, then QSFP ID.
+   - 82599 T3: scan, then TN1010 reset unless vetoed or over-temperature.
+   - X552 15ac: mux set-up, CS4227 check-and-reset, module ID.
+   - X552 15ad: MDCSPD cleared, X557 probe, unstall, and reset unless vetoed.
+4. `reset`: CTRL.LNK_RST when LINKS is down and CTRL.RST when it is up, never
+   both. The X540 always uses RST.
+   - Semaphore: the X540 and X552 15ad hold the port's PHY bit; X552 15ac
+     holds 0x1806 with the mux.
+   - Timing: still no access in the first millisecond, then completion within
+     100 ms, then 50 ms (100 ms on the X540).
+   - Then the NVM waits and RAR0 as before. On the 82599, AUTOC2 link-disable
+     bits are cleared. On the X552, MDCSPD is cleared again (15ad) and the mux
+     set-up redone (15ac).
+5. `setup_link`, per family (below).
+6. `wait_link`: every 100 ms, up to 9 s for copper (X540, 82599 T3, X552 15ad)
+   and 3 s otherwise. X552 15ad reports up only when LINKS and the X557 both
+   say so. It re-forces the internal link on each copper link-up or speed
+   change. 82599 SFP+ with the crosstalk fix treats an empty cage as down.
+
+A PCI I/O error or a removed device stops bring-up (DEVICE_ERROR).
+
+Any other failure in `prepare` or `setup_link` is logged and link setup is
+skipped: a semaphore held by firmware, no PHY, an I2C or sideband error, or
+no NVM init sequence. Start still reports LINKS ("hands off", the spec 1.4.3
+recommendation).
+
+### Per family
+
+- **82599 SFP+ (10fb, 1507, 1529, 154a, 154d, 1557) and bypass (155d)**:
+  1. Module ID over I2CCTL 0x28 under the port's PHY semaphore. An absent or
+     unknown module is logged, and nothing is set up.
+  2. After the reset, NVM[0x2B] gives the init-sequence list. The key is
+     3 + lan for passive DA and 5 + lan otherwise. The list is walked, and the
+     data block goes to CORECTL under MAC_CSR, followed by 10 ms.
+  3. Protected write of AUTOC = NVM AUTOC | LMS 011: MAC_CSR if LESM is on,
+     then the pipeline reset. The pipeline reset toggles LMS bit 2 with
+     Restart_AN, polls ANLP1 10 × 4 ms, then writes the value back.
+  4. Laser (SFP+ only): SDP3 is cleared, then 100 ms. That is skipped when
+     manageability is enabled or ESDP bit 11 (SDP3_DIR) is clear.
+  5. Capabilities by spec 5.6.
+  6. Multispeed modules (and bypass): 10G, then 1G, then 10G again. Each try
+     does a rate select (SDP5 hard; bypass soft), 40 ms, `setup_mac_link`,
+     and the laser flap on the first try. Single-speed modules: one
+     `setup_mac_link`.
+  7. The SFI firmware patch version (spec 5.12) is logged.
+- **82599 QSFP (1558)**: as SFP+ with the QSFP ID and no rate select or laser.
+- **82599 backplane and CX4 (10f7, 10f8, 10f9, 10fc, 1514, 1517, 152a)**:
+  `setup_mac_link` with the NVM capabilities and the KX_AN_COMP wait. With the
+  NVM's own advertisement this writes nothing. SmartSpeed is not used, which
+  spec 9.2 allows.
+- **82599 T3 (151c)**:
+  1. TN1010 advertisement: 7.0x0020 bit 12, 7.0x0017 bit 14, 7.0x0010 bit 8.
+  2. AN restart and a pipeline reset, unless vetoed.
+  3. 50 ms.
+- **X540 (1528, 1560, 155c)**:
+  1. Scan.
+  2. PHY out of low-power mode.
+  3. Advertise 1.0x0004's speeds.
+  4. AN restart unless vetoed.
+- **X552 15ab KR**: KR+KX AN and restart, unless vetoed.
+- **X552 15aa KX4, 15b0 XFI, 15ae 1G-T**: nothing.
+- **X552 15ac SFP+**: multispeed modules run 10G/1G/10G with soft rate select.
+  Each speed sets the KR AN for that speed only and writes the CS4227 EDC (5
+  for passive DA, 9 otherwise). Single-speed modules take the per-speed step
+  once.
+- **X552 15ad 10G_T**:
+  1. iXFI is forced to 10G, with up to 1 s for LINKS and copper (skipped in
+     KR mode).
+  2. The X557 advertises 1.0x0004 without 100M, then AN is restarted unless
+     vetoed.
+  3. At copper link-up, 7.0xC800 gives the speed: iXFI 10G or 1G (KR mode: KR
+     AN 10G+1G). 10/100 is reported as not carried.
+
+### Policy choices and deviations, stated
+
+- **No semaphore force-take** (spec 1.4.3, 10 item 15): a held resource
+  fails as `Semaphore { held }` and the link is left alone.
+  - The X540/X552 start-up clean-up is not run.
+  - A REGSMP never granted is not cleared (the spec's "release both"). Only
+    SMBI, which this driver took, is given back.
+- **Intel-OUI module rule not applied** (spec 4.2 boot-driver note). Unknown
+  modules are still refused, and so is 1000BASE-T on the X552.
+- **SmartSpeed not used** on 82599 backplanes (spec 9.2 allows it).
+- **X552 LASI alarm enables** (spec 7.8.3, optional) are not set: the driver
+  polls.
+- **X552 crosstalk fix not applied.** The spec gives an NVM word 0x2C read,
+  but no X552 NVM access path; the 82599 reads it through EERD.
+- **QSFP multispeed not run.** Spec 4.5 does not say when a QSFP module is
+  multispeed.
+- **82599_LS (154f) not bound**, per spec 10 item 2.
+- EERD (NVM word read) is from the 82599 datasheet (8.2.3.2.2). The spec
+  assumes NVM access is available.
+
+### Hardware checks (spec section 10)
+
+server1 and server2 are 8086:1557, an 82599 SFP+ (stormbootx#44/#45's
+rustnic media). What their SOL logs should settle:
+
+1. **NVM default LMS** (item 10): the `NVM AUTOC` value in the `link setup:
+   module …` line. The spec takes capabilities from it (5.6). If a board's NVM
+   LMS were 000 with a single-speed 10G module, 5.6 gives 1G. The line shows
+   what this board has, and the final AUTOC shows what was set.
+2. **SDP3 direction** (item 11): `laser on` versus `laser not driven (SDP3 is
+   not an output)`.
+3. **Cage presence polarity** (item 12): with `cage-presence check on` in the
+   line and a module fitted, the link must still come up. Also boot once with
+   the cage empty.
+4. **LINKS fields** (item 1): `link up 10000 Mb/s` against Linux on the same
+   port.
+5. **Module ID timing** (5.14): the module type in the line; an `I2c` error
+   or `none` with a module fitted means the I2C path needs a look.
+6. **SFI firmware version** (5.12): the `SFI firmware patch version` line
+   (expected > 5).
+7. **Reset type**: `reset (RST)` or `reset (LNK_RST, link was down)`. The link
+   should come up either way.
+
+Not checkable on server1 (no such hardware known):
+- X540: items 3 (PHY MDIO address) and 13 (7.0xC800 decode).
+- X552: items 4–5 (NW_MNG_IF_SEL and INT_PHY_MODE on 15ad), 6–7 (IOSF order,
+  AN_RESTART self-clear), 8–9 (CS4227 checksum and the scratch handshake over
+  AC and warm resets) and 14 (Marvell 1G-T).
+- 82599_LS (item 2).
+
+The console lines print what each check needs: the PHY at its MDIO address,
+NW_MNG_IF_SEL, LINK_CTRL_1 and the CS4227 reset or not.
+
+### Verification
+
+`sc-build 'scripts/test-hardware.sh && scripts/check-driver.sh'` at
+`c174bcc`: 43 tests passed; release image x86_64 PE32+ subsystem 11, 81,408
+bytes; exit 0, drive deleted.
+
+The simulated register file now emulates:
+- EERD NVM words and ANLP1;
+- PHY soft reset;
+- a bit-level I2C slave on both I2CCTL layouts: the SFP ID and A2 pages,
+  the port expander and the CS4227, whose checksums are checked on every
+  transaction, with NACKs recorded.
+
+The tests cover:
+- the reset type and its semaphore per family;
+- both semaphore algorithms and their bounds;
+- the 82599 NVM sequence, the protected write and pipeline reset, LESM, the
+  veto, the laser (on, manageability, SDP3 not an output), multispeed with
+  hard rate select and the laser flap, 1G SFI, absent/unknown/unlisted
+  modules, crosstalk, the backplane, TN1010 and the QSFP handshake;
+- the X540 power-on, advertisement and veto;
+- X552 KR, KX4/XFI/1G-T, sideband errors, X557 order (unstall, PHY reset, MAC
+  reset, iXFI, advertisement), LINKS AND copper, re-forcing once per change,
+  KR mode, no PHY, veto;
+- the SFP multispeed fallback, the classification order, the CS4227 checksum
+  NACK, the pending-peer takeover and a CS4227 that never loads.
+
+None of it has run on hardware.
 
 ## Vendor sources
 
@@ -32,9 +219,10 @@ disables reception and all 128 RX queues, and drains PCIe master requests.
 It reads CTRL back before polling STATUS. A drain failure returns without
 issuing reset; recovery by forced reset is deliberately not implemented.
 
-Global reset sets software and link reset together. No register access occurs
+Global reset (superseded by #13: now one reset type chosen by the spec,
+see above) set software and link reset together. No register access occurs
 for the first millisecond; reset completion is bounded to 100 ms, followed by
-10 ms settling. Interrupts are masked again. NVM auto-read, the correct LAN's
+10 ms settling (now 50 ms, or 100 ms on the X540). Interrupts are masked again. NVM auto-read, the correct LAN's
 manageability configuration, and DMA initialization each have a one-second
 bound. NVM presence is checked separately because auto-read completion also
 occurs when no valid NVM is present.
@@ -110,7 +298,7 @@ wrapper again could not append its read-only `runs.jsonl`; no host change
 was attempted. This verifies the unchanged scaffold/common primitives only,
 not PHY bring-up or a live link. The subsequent commit records these results.
 
-## Start integration and 82599/X540 link setup (2026-09-29)
+## Start integration and 82599/X540 link setup (2026-09-29, link setup superseded by #13)
 
 Start opens PciIo BY_DRIVER, reads the PCI attributes (Get), checks memory
 decode is supported, and enables `EFI_PCI_IO_ATTRIBUTE_MEMORY`. Bus mastering
@@ -156,7 +344,7 @@ NVM AUTOC preserved, X540/X552 write nothing, 82599 fail-closed on removal
 and I/O error, LMS decoding, bounded link wait); release image x86_64 PE32+
 subsystem 11, 32,256 bytes. Exit 0, drive deleted.
 
-## X552 PHY setup (2026-09-29)
+## X552 PHY setup (2026-09-29, superseded by #13)
 
 The documentation gap above was closed by the owner's answer on #2 ("can you
 not look at the C source from linux?"). Linux's ixgbe is GPL, but the same

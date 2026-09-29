@@ -3,6 +3,21 @@
 ## [Unreleased]
 
 ### 2026-09-29
+- **fix:** PHY and link programming matched to `docs/spec/phy.md` (#13), checked against the spec rather than the shared code. `src/hardware.rs` is split into `sync`, `mdio`, `i2c`, `sfp`, `f82599`, `x540` and `x552` modules. Start follows the spec's section 9 order: quiesce, MMNGC veto, the PHY/module steps before the reset, MAC reset, link setup, link wait. Changes:
+  - **MAC reset:** LNK_RST when the link is down and RST when it is up, never both; the X540 uses RST under the PHY semaphore and waits 100 ms. The X552 10G_T and SFP devices reset under their PHY masks. The settle is 50 ms, where it was 10 ms.
+  - **82599:** SFP+/QSFP+ module ID over I2CCTL 0x28, and the NVM init sequence (word 0x2B) into CORECTL under MAC_CSR. AUTOC gets a protected write to 10G SFI with a pipeline reset and LESM, where it used to get Restart_AN on the NVM AUTOC. Also: the laser on SDP3 (not under manageability, not if SDP3 is an input), and hard/soft rate select with 10G→1G→10G multispeed and a laser flap. `setup_mac_link` for backplanes. TN1010 reset and advertisement on 151c. The QSFP shared-bus handshake. The crosstalk cage check. The SFI firmware version is logged.
+  - **X540:** the PHY is taken out of low-power mode, advertises its 1.0x0004 speeds and restarts AN (it used to write nothing).
+  - **X552 10G_T:** X557 PHY reset after the unstall. 10G+1G advertisement and AN restart. KR mode sets the internal link at copper link-up only. The internal link is re-forced to the copper speed at 10G too, once per link-up or speed change. Link is up only when LINKS and the X557 agree.
+  - **X552 SFP:** 10G→1G→10G multispeed with soft rate select (A2 0x6E/0x76). The CS4227 check retries a held semaphore after 30 ms and waits 10 ms after each release.
+  - **I2C:** the CS4227 checksum byte is NACKed, where it was ACKed. The ACK is sampled 10 × 1 µs. Locked reads take the semaphore per attempt, with 100 ms after a failure.
+  - **SFP ID:** the identifier is re-read up to 5 times. A failed byte read means "not present". 10G-BX is classified before BX10.
+  - **MNG_VETO** is honoured on every path.
+  - **Semaphores:** the 82599 SWESMBI register semaphore. A never-granted REGSMP is no longer cleared.
+  - **LINKS:** 2.5G decoded on the X552. Polls every 100 ms, 9 s for copper.
+  - **Device IDs:** 155c, 155d and 15b0 added (25 IDs); 154f stays out (spec 10 item 2).
+  - **Hands off on failure:** a PHY/link step failure other than PCI I/O or removal is logged, and Start reports LINKS only, where it used to fail Start.
+  - **Tests:** 43 simulated tests, up from 28.
+- **docs:** Bring-up notes: the spec-matched design, the stated policy choices and deviations, the spec section 10 items turned into server1 hardware checks, and verification at c174bcc. README: IDs, Start sequence, every console line. Work plan.
 - **docs:** `docs/spec/phy.md`, an independent PHY and link programming specification for 82599 / X540 / X552 (MDIO, SW/FW semaphores, SFP+ I2C and SFF-8472, 82599 AUTOC/SFI/KR/KX4, X540 10GBASE-T, X552 IOSF KR registers, CS4227, X557 and Marvell paths, LINKS, timeouts, per-device polling walkthroughs), written from Intel's BSD-licensed shared code; `NOTICE` carries Intel's BSD-3-Clause notice (#13).
 - **feat:** X552 link setup per device (#2), from Intel's BSD-3-Clause shared code (owner's answer on #2): 15ab KR PHY advertises KR+KX over the IOSF sideband and restarts AN (skipped on manageability veto); 15ac resets the shared CS4227 once per power-on over bit-banged I2C, identifies the SFP+ module, sets the KR PHY to its speed and the CS4227 EDC mode; 15ad finds the X557 on MDIO, releases its power-up stall, forces the internal iXFI link (or KR) and re-forces it to 1G when copper links at 1G; 15aa and 15ae are run by hardware/firmware. SW_FW_SYNC is never taken from another owner. New console lines; 13 new simulated tests including a bit-level I2C slave.
 - **docs:** README (X552 behaviour, console lines, errors), bring-up notes (source and BSD notice, registers, per-device table, limits, verification at 8407e3c), work plan.
