@@ -5,7 +5,8 @@
 #
 #   sc-build scripts/check-driver.sh
 set -euo pipefail
-cargo build --release --target x86_64-unknown-uefi
+# --locked: Cargo.lock is committed (#11); a build must not re-resolve deps.
+cargo build --locked --release --target x86_64-unknown-uefi
 efi="${CARGO_TARGET_DIR:-target}/x86_64-unknown-uefi/release/stormnic-ixgbe.efi"
 python3 - "$efi" <<'PY'
 import hashlib, struct, sys

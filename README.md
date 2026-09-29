@@ -56,6 +56,11 @@ sc-build scripts/check-driver.sh
 sc-build 'cargo build --release --target x86_64-unknown-uefi'
 ```
 
+`Cargo.lock` is committed (#11) and `scripts/check-driver.sh` builds with
+`--locked`, so a pinned commit always builds with the same dependency
+versions (`uefi` 0.39.0, `uefi-raw` 0.15.1). Updating a dependency is a
+deliberate change to `Cargo.lock` in its own commit.
+
 The image is `target/x86_64-unknown-uefi/release/stormnic-ixgbe.efi`, about
 25 KB. `build.rs` adds `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER` to the link. The
 release profile is size-optimised (`opt-level = "z"`, LTO, `panic = "abort"`,
@@ -69,7 +74,9 @@ no input apart from the PCI functions the firmware offers it.
 The driver is a file in `\stormboot\drivers` on the stormbootx boot media.
 It is not a stormcentral component and has no golden. sc-build keeps nothing
 from a build. So stormbootx has to build the `.efi` from a pinned commit, the
-way its `scripts/build-nic-drivers.sh` builds iPXE's drivers. That isn't done
+way its `scripts/build-nic-drivers.sh` builds iPXE's drivers. Build it with
+`cargo build --locked --release --target x86_64-unknown-uefi` from any
+commit at or after the one that added `Cargo.lock` (#11). That isn't done
 yet: **stormbootx#29**. Until it lands, the driver can't reach any media.
 
 ## What it does today

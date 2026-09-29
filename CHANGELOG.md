@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-09-29
+- **build:** Commit `Cargo.lock` (generated on dev with sc-build: uefi 0.39.0, uefi-raw 0.15.1) and build `--locked` in `scripts/check-driver.sh`, so stormbootx's pinned-commit build of the driver is reproducible (#11). README says how to build a pinned commit locked.
 - **docs:** README (Start behaviour, every new console line, server1 is 8086:1557), bring-up notes (82599/X540 datasheet basis, known limits, remote verification at 025a137) and work plan; X552 PHY setup remains blocked on vendor documentation.
 - **feat:** Start brings the NIC up (#2): enables PCI memory decode (original attributes restored on Stop or failure), runs the common reset and NVM MAC read over BAR0, then link setup per family — 82599 applies its NVM-loaded AUTOC/AUTOC2 link mode with Restart_AN; X540's integrated PHY negotiates from its NVM image with no writes; X552 PHY setup is not implemented (vendor documentation pending) and is logged as such — and waits up to 3 s for link. Each step, the 82599 link mode/ESDP, and the link result are logged; a failed bring-up releases the NIC with DEVICE_ERROR. Five new simulated-register tests.
 - **docs:** Record passing remote regression tests and UEFI image validation at 50b6bb5, with the existing local build-log append limitation; PHY bring-up remains unimplemented.
