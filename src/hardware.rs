@@ -5,7 +5,8 @@
 //!
 //! Kept independent of UEFI so failure sequences can be tested without a NIC.
 //! The caller owns PciIo BY_DRIVER, enables BAR memory access, and supplies
-//! firmware Stall for delays. No DMA buffers or bus-master enable are needed.
+//! firmware Stall for delays. Bring-up needs no DMA; `rings` (#3) takes a
+//! DMA region the caller has mapped, with bus mastering enabled.
 //!
 //! Order, per spec 9: `begin` (port number, quiesce), `veto` (MMNGC once),
 //! `prepare` (the PHY or module steps the spec puts before the MAC reset),
@@ -69,6 +70,9 @@ pub enum Error<E> {
     NoInitSequence { key: u16 },
     /// 82599: the AN state (ANLP1 19:16) never left 0 in a pipeline reset (spec 5.4).
     PipelineReset,
+    /// A frame outside 14..=1518 bytes to send, or a received frame longer
+    /// than the caller's buffer (its length; it stays queued).
+    FrameLength { len: usize },
 }
 
 #[path = "sync.rs"]
@@ -85,6 +89,8 @@ pub mod f82599;
 pub mod x540;
 #[path = "x552.rs"]
 pub mod x552;
+#[path = "rings.rs"]
+pub mod rings;
 
 type R<T, E> = Result<T, Error<E>>;
 

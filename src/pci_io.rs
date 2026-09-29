@@ -33,6 +33,12 @@ pub enum AttributeOp {
 
 /// `EFI_PCI_IO_ATTRIBUTE_MEMORY`: the function decodes its memory BARs.
 pub const ATTRIBUTE_MEMORY: u64 = 0x0002;
+/// `EFI_PCI_IO_ATTRIBUTE_BUS_MASTER`: the function may master DMA.
+pub const ATTRIBUTE_BUS_MASTER: u64 = 0x0004;
+/// `AllocateAnyPages` and `EfiBootServicesData`, the only allocation type
+/// and one of the two memory types `AllocateBuffer` accepts.
+const ALLOCATE_ANY_PAGES: u32 = 0;
+const BOOT_SERVICES_DATA: u32 = 4;
 
 /// `EFI_PCI_IO_PROTOCOL_OPERATION` (for `Map`).
 #[allow(dead_code)]
@@ -223,6 +229,52 @@ impl PciIo {
             (self.mem.write)(self.this(), Width::U32, bar, offset.into(), 1, (&raw mut v).cast())
         }
         .to_result()
+    }
+
+    /// `AllocateBuffer`: `pages` of boot-services data below 4 GB, suitable
+    /// for a common-buffer mapping.
+    pub fn allocate_buffer(&self, pages: usize) -> Result<*mut u8> {
+        let mut host: *mut c_void = core::ptr::null_mut();
+        // SAFETY: live PciIo interface; `host` is a valid out-pointer.
+        unsafe {
+            (self.allocate_buffer)(self.this(), ALLOCATE_ANY_PAGES, BOOT_SERVICES_DATA, pages, &raw mut host, 0)
+        }
+        .to_result_with_val(|| host.cast())
+    }
+
+    /// `FreeBuffer` for memory from `allocate_buffer`.
+    ///
+    /// # Safety
+    /// `host` came from `allocate_buffer(pages)`, is unmapped, and is not
+    /// used again.
+    pub unsafe fn free_buffer(&self, pages: usize, host: *mut u8) -> Result {
+        (self.free_buffer)(self.this(), pages, host.cast()).to_result()
+    }
+
+    /// `Map(BusMasterCommonBuffer)` of `bytes` at `host`: the device
+    /// address and the mapping token. Fails unless all `bytes` are mapped.
+    ///
+    /// # Safety
+    /// `host` came from `allocate_buffer` and spans at least `bytes`.
+    pub unsafe fn map_common(&self, host: *mut u8, bytes: usize) -> Result<(u64, *mut c_void)> {
+        let mut len = bytes;
+        let mut device: u64 = 0;
+        let mut mapping: *mut c_void = core::ptr::null_mut();
+        (self.map)(self.this(), MapOp::BusMasterCommonBuffer, host.cast(), &raw mut len, &raw mut device, &raw mut mapping)
+            .to_result()?;
+        if len != bytes {
+            let _ = (self.unmap)(self.this(), mapping);
+            return Err(Status::OUT_OF_RESOURCES.into());
+        }
+        Ok((device, mapping))
+    }
+
+    /// `Unmap`.
+    ///
+    /// # Safety
+    /// `mapping` came from `map_common` and the device no longer uses it.
+    pub unsafe fn unmap(&self, mapping: *mut c_void) -> Result {
+        (self.unmap)(self.this(), mapping).to_result()
     }
 
     /// `Attributes(op, attributes)`, returning the result word (meaningful

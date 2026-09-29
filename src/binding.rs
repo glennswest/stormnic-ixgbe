@@ -8,17 +8,20 @@
 //! its own.
 //!
 //! Start holds `EFI_PCI_IO_PROTOCOL` BY_DRIVER for the controller, enables
-//! memory decode, and brings the NIC up (`hardware`, in the order of
-//! docs/spec/phy.md section 9: quiesce, the PHY/module steps before the MAC
-//! reset, MAC reset and NVM MAC, link setup, a bounded wait for link). Stop
-//! restores the PCI attributes it found and releases PciIo. The SNP child is
-//! later work (#3, #4).
+//! memory decode and bus mastering, and brings the NIC up (`hardware`, in the
+//! order of docs/spec/phy.md section 9: quiesce, the PHY/module steps before
+//! the MAC reset, MAC reset and NVM MAC, link setup, a bounded wait for
+//! link). It then maps the descriptor rings and buffers (`hardware::rings`,
+//! #3), runs the DMA check on a link that is up, and stops the queues again:
+//! nothing DMAs until the SNP (#4) starts them. Stop unmaps and frees the
+//! DMA region, restores the PCI attributes it found and releases PciIo.
 //!
 //! Every Intel network function Supported sees is logged, matched or not, so a
 //! boot names the device ID the machine really has. Nothing else is: the
 //! firmware calls Supported for every handle on every ConnectController.
 
 use alloc::vec::Vec;
+use core::ffi::c_void;
 use core::time::Duration;
 use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol};
 use uefi::driver::Driver;
@@ -27,11 +30,12 @@ use uefi::{println, Handle, Result, Status};
 
 use crate::hardware::f82599::{self, Laser, PhyReset};
 use crate::hardware::mdio::{self, Speeds};
+use crate::hardware::rings::{self, Dma, Filter, Rings};
 use crate::hardware::sfp::{Kind, Module};
 use crate::hardware::x552::{self, Copper};
 use crate::hardware::{self, Error, Link, Port, Prepared, Registers, Setup};
 use crate::ids::{self, Nic};
-use crate::pci_io::{AttributeOp, Location, PciIo, ATTRIBUTE_MEMORY};
+use crate::pci_io::{AttributeOp, Location, PciIo, ATTRIBUTE_BUS_MASTER, ATTRIBUTE_MEMORY};
 
 /// The NIC's registers: memory BAR 0 through PciIo.
 struct Bar0<'a>(&'a PciIo);
@@ -55,8 +59,48 @@ struct Bound {
     location: Option<Location>,
     /// PCI attributes before Start enabled memory decode; Stop puts them back.
     attributes: u64,
+    /// The descriptor rings and buffers, mapped for DMA; queues stopped.
+    dma: DmaRegion,
+    rings: Rings,
     /// The BY_DRIVER open; dropping it closes the protocol.
     pci: ScopedProtocol<PciIo>,
+}
+
+/// `rings::DMA_PAGES` from AllocateBuffer, mapped as one common buffer.
+struct DmaRegion {
+    host: *mut u8,
+    device: u64,
+    mapping: *mut c_void,
+}
+
+impl DmaRegion {
+    fn new(pci: &PciIo) -> Result<Self> {
+        let host = pci.allocate_buffer(rings::DMA_PAGES)?;
+        // SAFETY: `host` is DMA_PAGES pages from AllocateBuffer.
+        match unsafe { pci.map_common(host, rings::DMA_PAGES * 4096) } {
+            Ok((device, mapping)) => Ok(DmaRegion { host, device, mapping }),
+            Err(e) => {
+                // SAFETY: allocated above, never mapped or used.
+                let _ = unsafe { pci.free_buffer(rings::DMA_PAGES, host) };
+                Err(e)
+            }
+        }
+    }
+
+    /// Unmap and free. Only once the NIC's DMA is stopped.
+    fn release(self, pci: &PciIo) {
+        // SAFETY: the caller stopped the queues and disabled mastering, so
+        // the device no longer reads or writes the region; nothing else
+        // holds the pointer after this.
+        unsafe {
+            if let Err(e) = pci.unmap(self.mapping) {
+                println!("stormnic-ixgbe: could not unmap the DMA region: {:?}", e.status());
+            }
+            if let Err(e) = pci.free_buffer(rings::DMA_PAGES, self.host) {
+                println!("stormnic-ixgbe: could not free the DMA region: {:?}", e.status());
+            }
+        }
+    }
 }
 
 pub struct IxgbeDriver {
@@ -183,7 +227,7 @@ impl Driver for IxgbeDriver {
             Ok(a) => a,
             Err(e) => {
                 println!(
-                    "stormnic-ixgbe: {} 8086:{:04x}: Start could not enable memory decode: {:?}",
+                    "stormnic-ixgbe: {} 8086:{:04x}: Start could not enable memory decode and bus mastering: {:?}",
                     at(location),
                     nic.device,
                     e.status()
@@ -191,18 +235,28 @@ impl Driver for IxgbeDriver {
                 return Err(e);
             }
         };
-        if let Err(e) = bring_up(&pci, nic, location) {
-            println!(
-                "stormnic-ixgbe: {} 8086:{:04x} {}: bring-up failed: {:x?}; releasing",
-                at(location),
-                nic.device,
-                nic.name,
-                e
-            );
-            restore(&pci, attributes);
-            return Err(Status::DEVICE_ERROR.into());
-        }
-        self.bound.push(Bound { controller, location, attributes, pci });
+        let (mac, link) = match bring_up(&pci, nic, location) {
+            Ok(r) => r,
+            Err(e) => {
+                println!(
+                    "stormnic-ixgbe: {} 8086:{:04x} {}: bring-up failed: {:x?}; releasing",
+                    at(location),
+                    nic.device,
+                    nic.name,
+                    e
+                );
+                restore(&pci, attributes);
+                return Err(Status::DEVICE_ERROR.into());
+            }
+        };
+        let (dma, rings) = match dma_up(&pci, nic, location, mac, link) {
+            Ok(r) => r,
+            Err(()) => {
+                restore(&pci, attributes);
+                return Err(Status::DEVICE_ERROR.into());
+            }
+        };
+        self.bound.push(Bound { controller, location, attributes, dma, rings, pci });
         println!(
             "stormnic-ixgbe: {} 8086:{:04x} {}: Start: bound (no SNP yet)",
             at(location),
@@ -215,7 +269,11 @@ impl Driver for IxgbeDriver {
     fn stop(&mut self, _agent: Handle, controller: Handle) -> Result {
         match self.bound.iter().position(|b| b.controller == controller) {
             Some(i) => {
-                let b = self.bound.swap_remove(i);
+                let mut b = self.bound.swap_remove(i);
+                match b.rings.stop(&mut Bar0(&b.pci)) {
+                    Ok(_) => b.dma.release(&b.pci),
+                    Err(e) => keep_dma(&b.pci, b.location, &e),
+                }
                 restore(&b.pci, b.attributes);
                 println!("stormnic-ixgbe: {}: Stop: released", at(b.location));
                 Ok(())
@@ -228,15 +286,112 @@ impl Driver for IxgbeDriver {
     }
 }
 
-/// Enable memory decode, returning the attributes to restore on release.
+/// Enable memory decode and bus mastering (the rings are DMA), returning
+/// the attributes to restore on release.
 fn enable_memory(pci: &PciIo) -> Result<u64> {
+    let wanted = ATTRIBUTE_MEMORY | ATTRIBUTE_BUS_MASTER;
     let original = pci.attributes(AttributeOp::Get, 0)?;
     let supported = pci.attributes(AttributeOp::Supported, 0)?;
-    if supported & ATTRIBUTE_MEMORY == 0 {
+    if supported & wanted != wanted {
         return Err(Status::UNSUPPORTED.into());
     }
-    pci.attributes(AttributeOp::Enable, ATTRIBUTE_MEMORY)?;
+    pci.attributes(AttributeOp::Enable, wanted)?;
     Ok(original)
+}
+
+/// The queues could not be stopped: the NIC might still DMA into the
+/// region, so it is never freed. Bus mastering is turned off at the PCI
+/// level instead; the pages stay allocated until reboot.
+fn keep_dma(pci: &PciIo, location: Option<Location>, e: &Error<Status>) {
+    let off = pci.attributes(AttributeOp::Disable, ATTRIBUTE_BUS_MASTER);
+    println!(
+        "stormnic-ixgbe: {}: could not stop DMA: {e:x?}; bus mastering {}, DMA region kept allocated",
+        at(location),
+        if off.is_ok() { "disabled" } else { "could not be disabled" }
+    );
+}
+
+/// Map the rings and buffers, start the queues, run the DMA check if the
+/// link is up, and stop the queues. Everything is logged; Err(()) means
+/// Start fails (the region is released, or kept if DMA could not stop).
+fn dma_up(pci: &PciIo, nic: &Nic, location: Option<Location>, mac: [u8; 6], link: Link)
+    -> core::result::Result<(DmaRegion, Rings), ()> {
+    let (at, dev) = (at(location), nic.device);
+    let region = match DmaRegion::new(pci) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("stormnic-ixgbe: {at} 8086:{dev:04x}: DMA region not mapped: {:?}; releasing", e.status());
+            return Err(());
+        }
+    };
+    println!(
+        "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA: {} pages at device {:#x}, RX {} x {} B, TX {} x {} B, legacy descriptors",
+        rings::DMA_PAGES, region.device, rings::RX_DESCS, rings::BUF_SIZE, rings::TX_DESCS, rings::BUF_SIZE
+    );
+    // SAFETY: the region is DMA_BYTES (rounded to pages) from AllocateBuffer,
+    // mapped at `device`, and only these rings use it until it is released.
+    let mut rings = unsafe { Rings::new(Dma { host: region.host, device: region.device }) };
+    let mut io = Bar0(pci);
+    let filter = Filter { broadcast: true, ..Filter::default() };
+    let checked = rings.start(&mut io, filter).and_then(|()| match link {
+        Link::Up { .. } => rings::check(&mut io, &mut rings, mac, CHECK_LISTEN_MS).map(Some),
+        Link::Down => Ok(None),
+    });
+    match &checked {
+        Ok(Some(c)) => log_check(&at, dev, c),
+        Ok(None) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: rings started; DMA check skipped: link down"),
+        Err(e) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: rings failed: {e:x?}"),
+    }
+    match rings.stop(&mut io) {
+        Ok(left) if checked.is_ok() => {
+            println!(
+                "stormnic-ixgbe: {at} 8086:{dev:04x}: rings stopped{}",
+                if left > 0 { " (a frame was never sent)" } else { "" }
+            );
+            Ok((region, rings))
+        }
+        Ok(_) => {
+            region.release(pci);
+            println!("stormnic-ixgbe: {at} 8086:{dev:04x}: DMA region released; releasing");
+            Err(())
+        }
+        Err(e) => {
+            keep_dma(pci, location, &e);
+            Err(())
+        }
+    }
+}
+
+/// How long the DMA check listens for a frame from the network.
+const CHECK_LISTEN_MS: usize = 3000;
+
+fn mac_str(m: [u8; 6]) -> impl core::fmt::Display {
+    struct M([u8; 6]);
+    impl core::fmt::Display for M {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            let m = self.0;
+            write!(f, "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", m[0], m[1], m[2], m[3], m[4], m[5])
+        }
+    }
+    M(m)
+}
+
+fn log_check(at: &impl core::fmt::Display, dev: u16, c: &rings::Checked) {
+    println!(
+        "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: broadcast frame {} (GPTC {})",
+        if c.sent { "sent, 60 bytes" } else { "not sent within 100 ms" },
+        c.gptc
+    );
+    match c.first {
+        Some(f) => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: received {} frame(s) after {} ms (GPRC {}), first {} bytes from {} to {} type {:04x}",
+            c.received, c.waited_ms, c.gprc, f.len, mac_str(f.source), mac_str(f.destination), f.ethertype
+        ),
+        None => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: received nothing in {} ms (GPRC {})",
+            c.waited_ms, c.gprc
+        ),
+    }
 }
 
 fn restore(pci: &PciIo, attributes: u64) {
@@ -252,7 +407,7 @@ fn fatal(e: &Error<Status>) -> bool { matches!(e, Error::Io(_) | Error::Removed)
 
 /// Quiesce, PHY/module steps, MAC reset, NVM MAC, link setup and link wait,
 /// each step logged.
-fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result::Result<(), Error<Status>> {
+fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result::Result<([u8; 6], Link), Error<Status>> {
     let mut io = Bar0(pci);
     let (at, dev) = (at(location), nic.device);
     let lan = hardware::begin(&mut io)?;
@@ -302,7 +457,7 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
         Link::Up { megabits: None } => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link up, speed encoding reserved"),
         Link::Down => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link down after {budget} ms"),
     }
-    Ok(())
+    Ok((id.mac, w.link))
 }
 
 fn speeds(s: Speeds) -> &'static str {
