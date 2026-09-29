@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-09-29
+- **docs:** Record passing remote regression tests and UEFI image validation at 50b6bb5, with the existing local build-log append limitation; PHY bring-up remains unimplemented.
 - **docs:** Record specific X552 internal-register and CS4227 programming-document gaps, vendor references, and continuation requirements for #2; retain the approved all-variant scope.
 - **docs:** Resume #2 with the owner-approved all-22-ID scope and record the vendor-documentation audit, integration, and remote verification plan.
 

@@ -67,7 +67,6 @@ release driver passed the x86_64 PE32+ subsystem-11 check (25,600 bytes).
 The remote job exited 0. The wrapper subsequently reported that its local
 `runs.jsonl` was read-only; no host changes were attempted.
 
-
 ## All-variant documentation audit (2026-09-29)
 
 The scope decision is resolved; this is a source-documentation dependency,
@@ -101,3 +100,11 @@ The audit has not established that these are the only remaining source gaps.
 
 No driver code changed during this audit. The feature and version bump remain
 pending, and #2 must stay open.
+
+Remote regression verification on 2026-09-29 at `50b6bb5`:
+`sc-build 'scripts/test-hardware.sh && scripts/check-driver.sh'` passed all
+10 existing tests and the release PE check (x86_64, PE32+, subsystem 11,
+25,600 bytes). The remote job exited 0 and its drive was deleted. The local
+wrapper again could not append its read-only `runs.jsonl`; no host change
+was attempted. This verifies the unchanged scaffold/common primitives only,
+not PHY bring-up or a live link. The subsequent commit records these results.
