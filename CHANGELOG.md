@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-09-29
+- **docs:** `docs/spec/phy.md`, an independent PHY and link programming specification for 82599 / X540 / X552 (MDIO, SW/FW semaphores, SFP+ I2C and SFF-8472, 82599 AUTOC/SFI/KR/KX4, X540 10GBASE-T, X552 IOSF KR registers, CS4227, X557 and Marvell paths, LINKS, timeouts, per-device polling walkthroughs), written from Intel's BSD-licensed shared code; `NOTICE` carries Intel's BSD-3-Clause notice (#13).
 - **feat:** X552 link setup per device (#2), from Intel's BSD-3-Clause shared code (owner's answer on #2): 15ab KR PHY advertises KR+KX over the IOSF sideband and restarts AN (skipped on manageability veto); 15ac resets the shared CS4227 once per power-on over bit-banged I2C, identifies the SFP+ module, sets the KR PHY to its speed and the CS4227 EDC mode; 15ad finds the X557 on MDIO, releases its power-up stall, forces the internal iXFI link (or KR) and re-forces it to 1G when copper links at 1G; 15aa and 15ae are run by hardware/firmware. SW_FW_SYNC is never taken from another owner. New console lines; 13 new simulated tests including a bit-level I2C slave.
 - **docs:** README (X552 behaviour, console lines, errors), bring-up notes (source and BSD notice, registers, per-device table, limits, verification at 8407e3c), work plan.
 - **build:** Commit `Cargo.lock` (generated on dev with sc-build: uefi 0.39.0, uefi-raw 0.15.1) and build `--locked` in `scripts/check-driver.sh`, so stormbootx's pinned-commit build of the driver is reproducible (#11). README says how to build a pinned commit locked.
