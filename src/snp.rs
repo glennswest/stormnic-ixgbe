@@ -367,7 +367,7 @@ unsafe extern "efiapi" fn wait_notify(event: Event, context: *mut c_void) {
     let mut io = port.io();
     if port.core.frame_waiting(&mut io) {
         // SAFETY: our own event.
-        unsafe { (bs().signal_event)(event) };
+        unsafe { let _ = (bs().signal_event)(event); }
     }
 }
 
@@ -468,7 +468,7 @@ pub unsafe fn remove_child(agent: Handle, controller: Handle, port: *mut Port) -
     let p = unsafe { &mut *port };
     let Some(child) = p.child else { return Ok(()) };
     unsafe {
-        (bs.close_protocol)(controller, &PCI_IO_GUID, agent, child);
+        let _ = (bs.close_protocol)(controller, &PCI_IO_GUID, agent, child);
         let r = (bs.uninstall_multiple_protocol_interfaces)(
             child,
             &SimpleNetworkProtocol::GUID as *const Guid, &raw const p.snp as *const c_void,
@@ -477,7 +477,7 @@ pub unsafe fn remove_child(agent: Handle, controller: Handle, port: *mut Port) -
         );
         if r.is_error() {
             let mut iface: *mut c_void = ptr::null_mut();
-            (bs.open_protocol)(controller, &PCI_IO_GUID, &mut iface, agent, child, BY_CHILD_CONTROLLER);
+            let _ = (bs.open_protocol)(controller, &PCI_IO_GUID, &mut iface, agent, child, BY_CHILD_CONTROLLER);
             return Err(r);
         }
     }
@@ -496,8 +496,8 @@ pub unsafe fn destroy(port: *mut Port) -> Result<(), Error<Status>> {
     let bs = bs();
     let mut p = unsafe { Box::from_raw(port) };
     unsafe {
-        if !p.snp.wait_for_packet.is_null() { (bs.close_event)(p.snp.wait_for_packet); }
-        if !p.exit.is_null() { (bs.close_event)(p.exit); }
+        if !p.snp.wait_for_packet.is_null() { let _ = (bs.close_event)(p.snp.wait_for_packet); }
+        if !p.exit.is_null() { let _ = (bs.close_event)(p.exit); }
     }
     let mut io = p.io();
     p.core.state = State::Stopped;
