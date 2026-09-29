@@ -91,6 +91,8 @@ pub mod x540;
 pub mod x552;
 #[path = "rings.rs"]
 pub mod rings;
+#[path = "snp_core.rs"]
+pub mod snp;
 
 type R<T, E> = Result<T, Error<E>>;
 

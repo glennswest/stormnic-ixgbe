@@ -12,9 +12,15 @@
 //! order of docs/spec/phy.md section 9: quiesce, the PHY/module steps before
 //! the MAC reset, MAC reset and NVM MAC, link setup, a bounded wait for
 //! link). It then maps the descriptor rings and buffers (`hardware::rings`,
-//! #3), runs the DMA check on a link that is up, and stops the queues again:
-//! nothing DMAs until the SNP (#4) starts them. Stop unmaps and frees the
-//! DMA region, restores the PCI attributes it found and releases PciIo.
+//! #3), runs the DMA check on a link that is up, and stops the queues again.
+//! Last it makes the SNP child handle (`snp`, #4): nothing DMAs until the
+//! firmware's MNP initializes that SNP. Stop with children removes the child;
+//! Stop without unmaps and frees the DMA region, restores the PCI attributes
+//! it found and releases PciIo.
+//!
+//! The binding glue is here, not the `uefi` crate's `driver::install`: that
+//! refuses Stop with children, which DisconnectController needs for the SNP
+//! child.
 //!
 //! Every Intel network function Supported sees is logged, matched or not, so a
 //! boot names the device ID the machine really has. Nothing else is: the
@@ -23,14 +29,18 @@
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::time::Duration;
+use alloc::boxed::Box;
 use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol};
-use uefi::driver::Driver;
-use uefi::proto::device_path::DevicePath;
+use uefi::mem::memory_map::MemoryType;
+use uefi::proto::loaded_image::LoadedImage;
 use uefi::{println, Handle, Result, Status};
+use uefi_raw::protocol::device_path::DevicePathProtocol;
+use uefi_raw::protocol::driver::DriverBindingProtocol;
 
 use crate::hardware::f82599::{self, Laser, PhyReset};
 use crate::hardware::mdio::{self, Speeds};
 use crate::hardware::rings::{self, Dma, Filter, Rings};
+use crate::snp::{self, Port};
 use crate::hardware::sfp::{Kind, Module};
 use crate::hardware::x552::{self, Copper};
 use crate::hardware::{self, Error, Link, Port, Prepared, Registers, Setup};
@@ -38,7 +48,7 @@ use crate::ids::{self, Nic};
 use crate::pci_io::{AttributeOp, Location, PciIo, ATTRIBUTE_BUS_MASTER, ATTRIBUTE_MEMORY};
 
 /// The NIC's registers: memory BAR 0 through PciIo.
-struct Bar0<'a>(&'a PciIo);
+pub struct Bar0<'a>(pub &'a PciIo);
 
 impl Registers for Bar0<'_> {
     type Error = Status;
@@ -59,9 +69,10 @@ struct Bound {
     location: Option<Location>,
     /// PCI attributes before Start enabled memory decode; Stop puts them back.
     attributes: u64,
-    /// The descriptor rings and buffers, mapped for DMA; queues stopped.
+    /// The descriptor rings and buffers, mapped for DMA.
     dma: DmaRegion,
-    rings: Rings,
+    /// The SNP, its child handle and the rings (`snp::create`).
+    port: *mut Port,
     /// The BY_DRIVER open; dropping it closes the protocol.
     pci: ScopedProtocol<PciIo>,
 }
@@ -138,7 +149,7 @@ fn open(agent: Handle, controller: Handle, attrs: OpenProtocolAttributes) -> Res
     unsafe { boot::open_protocol::<PciIo>(params, attrs) }
 }
 
-fn at(location: Option<Location>) -> impl core::fmt::Display {
+pub fn at(location: Option<Location>) -> impl core::fmt::Display {
     struct At(Option<Location>);
     impl core::fmt::Display for At {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -180,8 +191,8 @@ impl IxgbeDriver {
     }
 }
 
-impl Driver for IxgbeDriver {
-    fn supported(&mut self, agent: Handle, controller: Handle, _remaining: Option<&DevicePath>) -> Result {
+impl IxgbeDriver {
+    fn supported(&mut self, agent: Handle, controller: Handle) -> Result {
         if self.is_bound(controller) {
             return Err(Status::ALREADY_STARTED.into());
         }
@@ -209,7 +220,7 @@ impl Driver for IxgbeDriver {
         }
     }
 
-    fn start(&mut self, agent: Handle, controller: Handle, _remaining: Option<&DevicePath>) -> Result {
+    fn start(&mut self, agent: Handle, controller: Handle) -> Result {
         let (nic, location) = self.ours(agent, controller)?;
         let pci = match open(agent, controller, OpenProtocolAttributes::ByDriver) {
             Ok(pci) => pci,
@@ -256,34 +267,159 @@ impl Driver for IxgbeDriver {
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
-        self.bound.push(Bound { controller, location, attributes, dma, rings, pci });
+        let media = link != Link::Down;
+        let port = match snp::create(agent.as_ptr(), controller.as_ptr(), &pci, rings, nic.family, mac, media, location) {
+            Ok(p) => p,
+            Err((status, in_use)) => {
+                println!(
+                    "stormnic-ixgbe: {} 8086:{:04x}: SNP not installed: {:?}; releasing",
+                    at(location),
+                    nic.device,
+                    status
+                );
+                if in_use {
+                    keep_dma(&pci, location, &Error::Io(status));
+                } else {
+                    dma.release(&pci);
+                }
+                restore(&pci, attributes);
+                return Err(Status::DEVICE_ERROR.into());
+            }
+        };
+        self.bound.push(Bound { controller, location, attributes, dma, port, pci });
         println!(
-            "stormnic-ixgbe: {} 8086:{:04x} {}: Start: bound (no SNP yet)",
+            "stormnic-ixgbe: {} 8086:{:04x} {}: Start: bound, SNP on a child handle, MAC {}, media {}",
             at(location),
             nic.device,
-            nic.name
+            nic.name,
+            mac_str(mac),
+            if media { "present" } else { "absent" }
         );
         Ok(())
     }
 
-    fn stop(&mut self, _agent: Handle, controller: Handle) -> Result {
-        match self.bound.iter().position(|b| b.controller == controller) {
-            Some(i) => {
-                let mut b = self.bound.swap_remove(i);
-                match b.rings.stop(&mut Bar0(&b.pci)) {
-                    Ok(_) => b.dma.release(&b.pci),
-                    Err(e) => keep_dma(&b.pci, b.location, &e),
+    /// With `children`, remove the SNP child; without, release the NIC.
+    fn stop(&mut self, agent: Handle, controller: Handle, children: &[uefi_raw::Handle]) -> Result {
+        let Some(i) = self.bound.iter().position(|b| b.controller == controller) else {
+            println!("stormnic-ixgbe: Stop for a controller this driver never started");
+            return Err(Status::DEVICE_ERROR.into());
+        };
+        let (port, location) = (self.bound[i].port, self.bound[i].location);
+        // SAFETY: `port` is live until `snp::destroy` below.
+        let child = unsafe { (*port).child };
+        if !children.is_empty() || child.is_some() {
+            if child.is_some_and(|c| children.is_empty() || children.contains(&c)) {
+                // SAFETY: as above.
+                if let Err(s) = unsafe { snp::remove_child(agent.as_ptr(), controller.as_ptr(), port) } {
+                    println!("stormnic-ixgbe: {}: Stop: SNP child still in use ({s:?}); kept", at(location));
+                    return Err(Status::DEVICE_ERROR.into());
                 }
-                restore(&b.pci, b.attributes);
-                println!("stormnic-ixgbe: {}: Stop: released", at(b.location));
-                Ok(())
+                println!("stormnic-ixgbe: {}: Stop: SNP child removed", at(location));
             }
-            None => {
-                println!("stormnic-ixgbe: Stop for a controller this driver never started");
-                Err(Status::DEVICE_ERROR.into())
+            if !children.is_empty() {
+                return Ok(());
             }
         }
+        let b = self.bound.swap_remove(i);
+        // SAFETY: the child is gone, so nothing else reaches the Port.
+        match unsafe { snp::destroy(b.port) } {
+            Ok(()) => b.dma.release(&b.pci),
+            Err(e) => keep_dma(&b.pci, b.location, &e),
+        }
+        restore(&b.pci, b.attributes);
+        println!("stormnic-ixgbe: {}: Stop: released", at(b.location));
+        Ok(())
     }
+}
+
+/// The driver binding interface and the driver behind it. `protocol` first:
+/// firmware's `This` is the Binding.
+#[repr(C)]
+struct Binding {
+    protocol: DriverBindingProtocol,
+    driver: IxgbeDriver,
+}
+
+/// # Safety
+/// `this` is the `protocol` of the leaked Binding; the firmware serializes
+/// binding calls.
+unsafe fn binding<'a>(this: *const DriverBindingProtocol) -> &'a mut Binding {
+    unsafe { &mut *(this as *mut Binding) }
+}
+
+fn handles(this: *const DriverBindingProtocol, controller: uefi_raw::Handle) -> Option<(Handle, Handle)> {
+    if this.is_null() { return None; }
+    // SAFETY: the firmware passes our interface and a controller handle.
+    unsafe {
+        let agent = Handle::from_ptr((*this).driver_binding_handle)?;
+        Some((agent, Handle::from_ptr(controller)?))
+    }
+}
+
+unsafe extern "efiapi" fn binding_supported(this: *const DriverBindingProtocol, controller: uefi_raw::Handle,
+    _remaining: *const DevicePathProtocol) -> Status {
+    let Some((agent, controller)) = handles(this, controller) else { return Status::INVALID_PARAMETER };
+    match unsafe { binding(this) }.driver.supported(agent, controller) {
+        Ok(()) => Status::SUCCESS,
+        Err(e) => e.status(),
+    }
+}
+
+unsafe extern "efiapi" fn binding_start(this: *const DriverBindingProtocol, controller: uefi_raw::Handle,
+    _remaining: *const DevicePathProtocol) -> Status {
+    let Some((agent, controller)) = handles(this, controller) else { return Status::INVALID_PARAMETER };
+    match unsafe { binding(this) }.driver.start(agent, controller) {
+        Ok(()) => Status::SUCCESS,
+        Err(e) => e.status(),
+    }
+}
+
+unsafe extern "efiapi" fn binding_stop(this: *const DriverBindingProtocol, controller: uefi_raw::Handle,
+    count: usize, children: *const uefi_raw::Handle) -> Status {
+    let Some((agent, controller)) = handles(this, controller) else { return Status::INVALID_PARAMETER };
+    if count > 0 && children.is_null() { return Status::INVALID_PARAMETER; }
+    let children = if count == 0 { &[][..] } else {
+        // SAFETY: the firmware passes `count` child handles.
+        unsafe { core::slice::from_raw_parts(children, count) }
+    };
+    match unsafe { binding(this) }.driver.stop(agent, controller, children) {
+        Ok(()) => Status::SUCCESS,
+        Err(e) => e.status(),
+    }
+}
+
+/// Install `EFI_DRIVER_BINDING_PROTOCOL` on the image handle. The image
+/// must have been loaded as a boot-service driver (its code and data stay
+/// after the entry point returns).
+pub fn install() -> Result {
+    let image = boot::image_handle();
+    {
+        let loaded = boot::open_protocol_exclusive::<LoadedImage>(image)?;
+        if loaded.code_type() != MemoryType::BOOT_SERVICES_CODE || loaded.data_type() != MemoryType::BOOT_SERVICES_DATA {
+            return Err(Status::UNSUPPORTED.into());
+        }
+    }
+    let b = Box::into_raw(Box::new(Binding {
+        protocol: DriverBindingProtocol {
+            supported: binding_supported,
+            start: binding_start,
+            stop: binding_stop,
+            version: 1,
+            image_handle: image.as_ptr(),
+            driver_binding_handle: image.as_ptr(),
+        },
+        driver: IxgbeDriver::new(),
+    }));
+    // SAFETY: the Binding is leaked, so the interface lives as long as the
+    // image; the GUID matches the interface.
+    let r = unsafe {
+        boot::install_protocol_interface(Some(image), &DriverBindingProtocol::GUID, (&raw const (*b).protocol).cast())
+    };
+    if r.is_err() {
+        // SAFETY: not installed, so nothing else holds it.
+        drop(unsafe { Box::from_raw(b) });
+    }
+    r.map(|_| ())
 }
 
 /// Enable memory decode and bus mastering (the rings are DMA), returning

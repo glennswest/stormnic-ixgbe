@@ -284,6 +284,23 @@ impl Rings {
         }
     }
 
+    /// Length and destination address of the next good received frame,
+    /// left queued.
+    pub fn peek<Io: Registers>(&mut self, io: &mut Io) -> R<Option<(usize, [u8; 6])>, Io::Error> {
+        let Some(len) = self.next_len(io)? else { return Ok(None) };
+        let mut destination = [0u8; 6];
+        // SAFETY: the NIC wrote `len` >= MIN_FRAME bytes and set DD; the
+        // buffer is the driver's until `recycle`.
+        unsafe { ptr::copy_nonoverlapping(self.rx_buf(self.rx_next), destination.as_mut_ptr(), 6); }
+        Ok(Some((len, destination)))
+    }
+
+    /// Drop the frame `peek` returned: its buffer goes back to the NIC.
+    pub fn skip<Io: Registers>(&mut self, io: &mut Io) -> R<(), Io::Error> {
+        if self.next_len(io)?.is_some() { self.recycle(io)?; }
+        Ok(())
+    }
+
     /// Copy the next good frame into `out` and give its buffer back.
     /// Ok(None): nothing received. A frame longer than `out` stays queued
     /// and fails with `FrameLength` (its length), so the caller can retry.

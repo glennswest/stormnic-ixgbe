@@ -1,10 +1,11 @@
 //! stormnic-ixgbe: an `EFI_SIMPLE_NETWORK_PROTOCOL` driver for Intel 10G, in Rust.
 //!
 //! An EFI boot-service driver (see build.rs). The entry point installs an
-//! `EFI_DRIVER_BINDING_PROTOCOL` on the image handle and returns; the
+//! `EFI_DRIVER_BINDING_PROTOCOL` on the image handle (binding.rs) and returns; the
 //! firmware's `ConnectController` (stormbootx runs it after loading every
 //! driver on its media) then calls Supported/Start for each controller.
-//! Bring-up and the SNP are the work plan in CLAUDE.md.
+//! Start brings the NIC up and puts an `EFI_SIMPLE_NETWORK_PROTOCOL` on a
+//! child handle, which the firmware's MNP, IP4 and TCP4 bind on top of.
 #![no_main]
 #![no_std]
 
@@ -14,6 +15,7 @@ mod binding;
 mod hardware;
 mod ids;
 mod pci_io;
+mod snp;
 
 use uefi::prelude::*;
 
@@ -23,7 +25,7 @@ fn main() -> Status {
         return Status::LOAD_ERROR;
     }
     let version = env!("CARGO_PKG_VERSION");
-    match uefi::driver::install(binding::IxgbeDriver::new(), None) {
+    match binding::install() {
         Ok(()) => {
             uefi::println!(
                 "stormnic-ixgbe {version}: driver binding installed ({} Intel 10G device IDs)",
