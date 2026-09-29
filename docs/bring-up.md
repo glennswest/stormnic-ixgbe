@@ -1,10 +1,11 @@
 # Bring-up implementation notes (#2)
 
 Start runs the sequence below through BAR0 (`src/binding.rs` →
-`src/hardware.rs`). The owner requires all 22 matched PCI IDs (decision
-recorded on #2 on 2026-09-28). 82599 and X540 link setup are implemented from
-their datasheets; X552 PHY setup is not, pending the documentation gap below
-(owner question on #2). Nothing here has run on hardware yet.
+`src/hardware.rs`, `src/x552.rs`). The owner requires all 22 matched PCI IDs
+(decision recorded on #2 on 2026-09-28). 82599 and X540 link setup are
+implemented from their datasheets; X552 PHY setup from Intel's BSD-licensed
+shared code, after the owner's answer on #2 (see [X552 PHY
+setup](#x552-phy-setup-2026-09-29)). Nothing here has run on hardware yet.
 
 ## Vendor sources
 
@@ -135,8 +136,8 @@ After `reset` (above), `setup_link` differs per family:
   3.6.3.2: the PHY auto-negotiates and software changes its settings only to
   depart from the defaults; 3.6.3.3.3: the PHY is reset with the MAC except
   on software-only reset. No MDIO access is made.
-- **X552** — no link-setup write (see the audit below); the NVM defaults
-  stand and the console says so.
+- **X552** — per device; superseded by [X552 PHY
+  setup](#x552-phy-setup-2026-09-29) below (at 025a137 it wrote nothing).
 
 `wait_link` then polls current LINKS.LINK_UP every 10 ms for up to 3 s.
 Link down at the deadline is reported, not an error.
@@ -154,3 +155,106 @@ scripts/check-driver.sh'` — 15 tests passed (5 new: 82599 Restart_AN with
 NVM AUTOC preserved, X540/X552 write nothing, 82599 fail-closed on removal
 and I/O error, LMS decoding, bounded link wait); release image x86_64 PE32+
 subsystem 11, 32,256 bytes. Exit 0, drive deleted.
+
+## X552 PHY setup (2026-09-29)
+
+The documentation gap above was closed by the owner's answer on #2 ("can you
+not look at the C source from linux?"). Linux's ixgbe is GPL, but the same
+hardware layer is Intel's *shared code*, which Intel also publishes under
+BSD-3-Clause — FreeBSD `sys/dev/ixgbe` (and DPDK `drivers/net/ixgbe/base`).
+That is vendor-authored and compatible with this MIT crate, so it is the
+source used, read for register addresses, bit fields and the order of
+operations. `src/x552.rs` is written here in its own structure (a
+register-trait state machine with bounded waits and fail-closed errors, like
+`hardware.rs`); it is not a line-by-line port. Files read:
+`ixgbe_x550.c` (`ixgbe_init_phy_ops_X550em`, `ixgbe_setup_kr_speed_x550em`,
+`ixgbe_setup_ixfi_x550em[_x]`, `ixgbe_setup_mac_link_sfp_x550em`,
+`ixgbe_check_cs4227`/`ixgbe_reset_cs4227`, `ixgbe_setup_mux_ctl`,
+`ixgbe_init_ext_t_x550em`, `ixgbe_setup_internal_phy_t_x550em`,
+IOSF sideband access), `ixgbe_x540.c` (SW_FW_SYNC semaphore), `ixgbe_phy.c`
+(MDIO, I2C bit-bang and the CS4227 combined protocol, SFP identification) and
+`ixgbe_phy.h`/`ixgbe_type.h` (addresses and fields).
+
+Notice for the source read, as its licence asks:
+
+> Copyright (c) 2001-2020, Intel Corporation. All rights reserved.
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions are
+> met: 1. Redistributions of source code must retain the above copyright
+> notice, this list of conditions and the following disclaimer. 2.
+> Redistributions in binary form must reproduce the above copyright notice,
+> this list of conditions and the following disclaimer in the documentation
+> and/or other materials provided with the distribution. 3. Neither the name
+> of the Intel Corporation nor the names of its contributors may be used to
+> endorse or promote products derived from this software without specific
+> prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+> HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+> INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+> AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+> COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+> INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+> LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+> OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+> LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+> NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+> SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+### Shared mechanisms
+
+- **SW/FW semaphore** (SWSM 0x10140 SMBI, SW_FW_SYNC 0x10160 REGSMP bit 31,
+  software bits PHY0/PHY1 1–2 and I2C 11–12, firmware bits 5 and 2 above
+  them). Waits: SMBI and REGSMP 2000 × 50 µs, the resource 1000 × 5 ms.
+  **Differs from Intel's code:** on timeout it does not take the resource
+  from firmware or clear another driver's bits; it fails with
+  `Semaphore { held }` (the crate's fail-closed rule).
+- **IOSF sideband** to the KR PHY: SB_IOSF_INDIRECT_CTRL 0x11144 (address in
+  the low bits, target 0 = KR PHY in 30:28, BUSY bit 31, response status
+  19:18) and _DATA 0x11148, under PHY0|PHY1, 100 × 10 µs busy wait. KRM
+  registers per port (port 1 = port 0 + 0x4000): LINK_CTRL_1 0x420c
+  (force speed 10:8 = 2 for 1G / 4 for 10G, CAP_KX 16, CAP_KR 18, AN_ENABLE
+  29, AN_RESTART 31), DSP_TXFFE_STATE_4/5 0x4634/0x4638, RX_TRN_LINKUP_CTRL
+  0x4b00, TX_COEFF_CTRL_1 0x5520.
+- **MDIO** clause 45 through MSCA 0x425c / MSRWD 0x4260 (address cycle,
+  then read or write; 100 × 10 µs each), under the port's PHY semaphore.
+- **I2C** bit-banged through I2CCTL 0x15f5c (X550 layout: BB_EN 8, CLK_OUT 9,
+  DATA_OUT 10, DATA_OE_N 11, DATA_IN 12, CLK_OE_N 13, CLK_IN 14) at standard
+  mode timing, with a nine-clock bus clear and retry on a missing ACK. The
+  bus is shared by both ports: taken with PHY0|PHY1|I2C, and port 1 selects
+  it through a mux on SDP1 (ESDP) while holding it.
+
+### Per device
+
+| ID | What is written | Console |
+|---|---|---|
+| 15aa KX4 | nothing: the hardware runs KX4 | `KX4, run by the hardware` |
+| 15ab KR | LINK_CTRL_1: AN_ENABLE, CAP_KR+CAP_KX; then AN_RESTART. Skipped if MMNGC.MNG_VETO | `KR PHY auto-negotiating KR+KX` |
+| 15ac SFP+ | ESDP mux setup; CS4227 reset once per power-on through port expander 0xe0 bit 1 (500 µs low, 450 ms, EFUSE/EEPROM status polled), recorded in its scratch register (0x5aa5); SFP ID bytes 0, 3, 6, 8 (0x3c, 12, 14, 15 when needed) at 0xa0; KR PHY auto-negotiating only the module's speed; CS4227 LINE_SPARE24_LSB (0x12b0 + port × 0x1000) = EDC mode (CX1 for passive DA, SR otherwise) << 1 \| 1 | `CS4227 …; SFP …, KR PHY 10G/1G, CS4227 EDC CX1/SR` |
+| 15ad 10GBASE-T | HLREG0.MDCSPD cleared; X557 found at NW_MNG_IF_SEL's MDIO address or by scanning 0–31; on first start (PMA 0xcc02 bits 1:0) Vendor-1 0xc479 bit 15 (power-up stall) cleared; internal link iXFI forced 10G (training and TX FFE adaptation off, coefficients overridden, AN restart), or KR AN if NW_MNG_IF_SEL.INT_PHY_MODE; then up to 5 s for copper and iXFI re-forced to 1G if copper is 1G | `X557 PHY … internal link Ixfi/Kr`, `copper link up …` |
+| 15ae 1000BASE-T | nothing: the external 1G PHY is run by firmware | `external 1G PHY run by firmware` |
+
+### Known limits (not claimed as done)
+
+- No PHY reset or LASI setup on 15ad; the X557's advertisement is its
+  provisioning default (Intel's driver rewrites it to the requested speeds).
+- 15ac: a multispeed module is run at 10G; SFP+ soft rate select (byte 110
+  at 0xa2) is not written. Intel's vendor-OUI enforcement is not applied: any
+  module that identifies as a supported type is driven. 1000BASE-T SFPs are
+  unsupported (as in Intel's code for this part).
+- Link is followed only during Start; a later copper speed change on 15ad
+  needs the SNP (#4) to re-run `follow_copper`.
+- Flow control is not configured on any family.
+
+### Verification
+
+`sc-build 'scripts/test-hardware.sh && scripts/check-driver.sh'` at
+`8407e3c`: 28 tests passed (13 new for X552), release image x86_64 PE32+
+subsystem 11, 53,248 bytes; exit 0, drive deleted. The new tests run each
+path against a simulated register file: KR writes on the right port and
+restart; manageability veto; firmware-held semaphore, never-granted SWSM,
+IOSF error and IOSF busy all fail without writes and release what they took;
+X557 found by scan or at the NVM address, stall released once, iXFI forced
+and re-forced to 1G, bounded waits, no PHY; and the 15ac path against a
+bit-level I2C slave model (SFP ID EEPROM, port expander, CS4227 with its
+checksummed register protocol checked on every transaction): one CS4227
+reset per power-on, passive DA/SR/1G modules, absent and unsupported
+modules, and a CS4227 that never loads. None of this has run on an X552.
