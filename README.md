@@ -69,7 +69,7 @@ versions (`uefi` 0.39.0, `uefi-raw` 0.15.1). Updating a dependency is a
 deliberate change to `Cargo.lock` in its own commit.
 
 The image is `target/x86_64-unknown-uefi/release/stormnic-ixgbe.efi`, about
-80 KB. `build.rs` adds `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER` to the link. The
+90 KB. `build.rs` adds `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER` to the link. The
 release profile is size-optimised (`opt-level = "z"`, LTO, `panic = "abort"`,
 stripped).
 
@@ -100,8 +100,8 @@ driver on its media, then calls the binding for each controller:
   that open fails and the driver declines, so the platform's driver wins.
   Handles without PciIo, and non-Intel or non-network functions, are
   declined silently.
-- **Start** keeps PciIo open BY_DRIVER, enables memory decode (saving the
-  PCI attributes it found) and brings the NIC up through BAR0
+- **Start** keeps PciIo open BY_DRIVER, enables memory decode and bus
+  mastering (saving the PCI attributes it found) and brings the NIC up through BAR0
   (`src/hardware.rs` and its modules, in the order of `docs/spec/phy.md`
   section 9; see the [bring-up notes](docs/bring-up.md)):
   1. quiesce, and read MMNGC's manageability veto once;
@@ -131,24 +131,34 @@ driver on its media, then calls the binding for each controller:
   5. waits for link, polling every 100 ms: 9 s for 10GBASE-T, 3 s otherwise.
      On X552 15ad the internal link is re-forced to the copper speed at
      copper link-up, and link is up only when LINKS and the X557 agree. Link
-     down is reported, not an error.
+     down is reported, not an error;
+  6. maps the descriptor rings and buffers for DMA, starts RX/TX queue 0,
+     and, if the link is up, runs the DMA check: one broadcast frame sent,
+     up to 3 s listening for any frame, GPTC/GPRC logged. Then it stops the
+     queues again, so nothing DMAs until the SNP (#4) starts them. See
+     [descriptor rings and DMA](docs/rings.md).
 
   A PCI I/O error or a removed device fails Start: it restores the
   attributes, releases PciIo and returns DEVICE_ERROR. A PHY or link step
   that fails otherwise is logged and skipped, and Start reports link from
   LINKS alone. Examples: a semaphore firmware holds (never taken from it),
   no PHY, an I2C or sideband error, no NVM init sequence.
-- **Stop** restores the PCI attributes and drops the PciIo open.
+- **Stop** stops the queues, unmaps and frees the DMA region, restores the
+  PCI attributes and drops the PciIo open. If the queues can't be stopped,
+  bus mastering is disabled and the region is left allocated (never freed
+  under a NIC that might still write to it).
 
 `EFI_PCI_IO_PROTOCOL` is defined in `src/pci_io.rs` from the UEFI spec
 (§14.4), because the `uefi` crate doesn't have it. The driver uses config
-reads, GetLocation, Attributes and 32-bit memory reads/writes on BAR0.
+reads, GetLocation, Attributes, 32-bit memory reads/writes on BAR0, and
+AllocateBuffer/Map/Unmap/FreeBuffer for the DMA region.
 
-`src/hardware.rs` is independent of UEFI and has a standalone
-simulated-register test harness (`sc-build scripts/test-hardware.sh`).
+`src/hardware.rs` (with `src/rings.rs`) is independent of UEFI and has
+standalone simulated-device test harnesses (`test/hardware.rs`,
+`test/rings.rs`; `sc-build scripts/test-hardware.sh`).
 
-There is **no DMA and no SNP yet** (#3, #4), so a bound NIC
-has no network handle. **Until #4 lands, don't put this driver on media next
+There is **no SNP yet** (#4), so a bound NIC has no network handle; the
+rings exist but only the DMA check runs them. **Until #4 lands, don't put this driver on media next
 to `ipxe-intelx.efi`:** whichever driver binds first holds the NIC, and if
 it's this one, the NIC has no SNP.
 
@@ -199,9 +209,20 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (100, 1000, 2500 on X552, or 10000) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link up, speed encoding reserved` | Start, link up with a reserved speed field |
 | `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise) |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA: 33 pages at device 0xX, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors` | Start, DMA region mapped |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA region not mapped: STATUS; releasing` | Start, AllocateBuffer or Map failed (returns DEVICE_ERROR) |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: broadcast frame sent, 60 bytes\|not sent within 100 ms (GPTC N)` | Start, link up |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received N frame(s) after M ms (GPRC N), first L bytes from MAC to MAC type TTTT` | Start, link up, a frame arrived |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received nothing in 3000 ms (GPRC N)` | Start, link up, nothing arrived |
+| `stormnic-ixgbe: LOC 8086:DDDD: rings started; DMA check skipped: link down` | Start, link down |
+| `stormnic-ixgbe: LOC 8086:DDDD: rings failed: ERROR` | Start, a queue did not enable (e.g. `Timeout { register: 1028, .. }`) |
+| `stormnic-ixgbe: LOC 8086:DDDD: rings stopped[ (a frame was never sent)]` | Start, queues stopped after the check |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA region released; releasing` | Start, after `rings failed` (returns DEVICE_ERROR) |
+| `stormnic-ixgbe: LOC: could not stop DMA: ERROR; bus mastering disabled\|could not be disabled, DMA region kept allocated` | Start or Stop, the queues would not stop |
+| `stormnic-ixgbe: could not unmap\|free the DMA region: STATUS` | Stop or failed Start |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound (no SNP yet)` | Start, success |
 | `stormnic-ixgbe: LOC 8086:DDDD: Start could not open PciIo BY_DRIVER: STATUS` | Start, failure |
-| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode: STATUS` | Start, failure |
+| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: STATUS` | Start, failure |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: bring-up failed: ERROR; releasing` | Start, quiesce/reset/NVM/MAC failed or the device went away (returns DEVICE_ERROR); ERROR is e.g. `Timeout { register: .., .. }`, `MissingNvm`, `InvalidMac`, `Removed`, `Io(..)`, or `Semaphore { .. }` when the reset's PHY semaphore is held |
 | `stormnic-ixgbe: could not restore PCI attributes 0xX: STATUS` | Stop or failed Start |
 | `stormnic-ixgbe: LOC: Stop: released` | Stop |
@@ -215,5 +236,8 @@ and device path runs in Start, checked in simulation (43 tests, including a
 bit-level I2C slave on both I2CCTL layouts for the SFP+ EEPROM, port
 expander and CS4227) and not yet on hardware; the checks for server1 are in
 the [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
-Next: descriptor rings (#3), SNP (#4), then retire `ipxe-intelx.efi` (#5,
-stormbootx#27).
+Descriptor rings and DMA (#3): RX/TX queue 0 with legacy descriptors in one
+mapped region, a DMA check in Start, checked in simulation (13 tests against
+a simulated DMA device) and not yet on hardware; see
+[docs/rings.md](docs/rings.md#hardware-checks-server1server2-80861557).
+Next: SNP (#4), then retire `ipxe-intelx.efi` (#5, stormbootx#27).
