@@ -8,15 +8,16 @@
 //! its own.
 //!
 //! Start holds `EFI_PCI_IO_PROTOCOL` BY_DRIVER for the controller, enables
-//! memory decode and bus mastering, and brings the NIC up (`hardware`, in the
+//! memory decode and bus mastering (`decode`: PciIo attributes, falling back
+//! to the command register on firmware that refuses them, #19), and brings the NIC up (`hardware`, in the
 //! order of docs/spec/phy.md section 9: quiesce, the PHY/module steps before
 //! the MAC reset, MAC reset and NVM MAC, link setup, a bounded wait for
 //! link). It then maps the descriptor rings and buffers (`hardware::rings`,
 //! #3), runs the DMA check on a link that is up, and stops the queues again.
 //! Last it makes the SNP child handle (`snp`, #4): nothing DMAs until the
 //! firmware's MNP initializes that SNP. Stop with children removes the child;
-//! Stop without unmaps and frees the DMA region, restores the PCI attributes
-//! it found and releases PciIo.
+//! Stop without unmaps and frees the DMA region, undoes what Start did to
+//! the PCI attributes and command register, and releases PciIo.
 //!
 //! The binding glue is here, not the `uefi` crate's `driver::install`: that
 //! refuses Stop with children, which DisconnectController needs for the SNP
@@ -45,7 +46,8 @@ use crate::hardware::sfp::{Kind, Module};
 use crate::hardware::x552::{self, Copper};
 use crate::hardware::{self, Error, Link, Port, Prepared, Registers, Setup};
 use crate::ids::{self, Nic};
-use crate::pci_io::{AttributeOp, Location, PciIo, ATTRIBUTE_BUS_MASTER, ATTRIBUTE_MEMORY};
+use crate::decode::{self, Enabled};
+use crate::pci_io::{Location, PciIo};
 
 /// The NIC's registers: memory BAR 0 through PciIo.
 pub struct Bar0<'a>(pub &'a PciIo);
@@ -67,8 +69,8 @@ impl Registers for Bar0<'_> {
 struct Bound {
     controller: Handle,
     location: Option<Location>,
-    /// PCI attributes before Start enabled memory decode; Stop puts them back.
-    attributes: u64,
+    /// How Start enabled memory decode and bus mastering; Stop undoes it.
+    decode: Enabled<Status>,
     /// The descriptor rings and buffers, mapped for DMA.
     dma: DmaRegion,
     /// The SNP, its child handle and the rings (`snp::create`).
@@ -234,16 +236,30 @@ impl IxgbeDriver {
                 return Err(e);
             }
         };
-        let attributes = match enable_memory(&pci) {
-            Ok(a) => a,
-            Err(e) => {
+        let attributes = match decode::enable(&*pci) {
+            Ok(e) => {
+                println!("stormnic-ixgbe: {} 8086:{:04x}: {}", at(location), nic.device, Decode(&e));
+                e
+            }
+            Err(decode::Error::Config(status)) => {
                 println!(
-                    "stormnic-ixgbe: {} 8086:{:04x}: Start could not enable memory decode and bus mastering: {:?}",
+                    "stormnic-ixgbe: {} 8086:{:04x}: Start could not enable memory decode and bus mastering: \
+                     command register access failed: {:?}",
                     at(location),
                     nic.device,
-                    e.status()
+                    status
                 );
-                return Err(e);
+                return Err(Status::UNSUPPORTED.into());
+            }
+            Err(decode::Error::NotSet(command, e)) => {
+                println!(
+                    "stormnic-ixgbe: {} 8086:{:04x}: Start could not enable memory decode and bus mastering: \
+                     command {command:#06x} after {}",
+                    at(location),
+                    nic.device,
+                    Decode(&e)
+                );
+                return Err(Status::UNSUPPORTED.into());
             }
         };
         let (mac, link) = match bring_up(&pci, nic, location) {
@@ -256,14 +272,14 @@ impl IxgbeDriver {
                     nic.name,
                     e
                 );
-                restore(&pci, attributes);
+                restore(&pci, &attributes);
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
         let (dma, rings) = match dma_up(&pci, nic, location, mac, link) {
             Ok(r) => r,
             Err(()) => {
-                restore(&pci, attributes);
+                restore(&pci, &attributes);
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
@@ -282,11 +298,11 @@ impl IxgbeDriver {
                 } else {
                     dma.release(&pci);
                 }
-                restore(&pci, attributes);
+                restore(&pci, &attributes);
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
-        self.bound.push(Bound { controller, location, attributes, dma, port, pci });
+        self.bound.push(Bound { controller, location, decode: attributes, dma, port, pci });
         println!(
             "stormnic-ixgbe: {} 8086:{:04x} {}: Start: bound, SNP on a child handle, MAC {}, media {}",
             at(location),
@@ -326,7 +342,7 @@ impl IxgbeDriver {
             Ok(()) => b.dma.release(&b.pci),
             Err(e) => keep_dma(&b.pci, b.location, &e),
         }
-        restore(&b.pci, b.attributes);
+        restore(&b.pci, &b.decode);
         println!("stormnic-ixgbe: {}: Stop: released", at(b.location));
         Ok(())
     }
@@ -422,24 +438,41 @@ pub fn install() -> Result {
     r.map(|_| ())
 }
 
-/// Enable memory decode and bus mastering (the rings are DMA), returning
-/// the attributes to restore on release.
-fn enable_memory(pci: &PciIo) -> Result<u64> {
-    let wanted = ATTRIBUTE_MEMORY | ATTRIBUTE_BUS_MASTER;
-    let original = pci.attributes(AttributeOp::Get, 0)?;
-    let supported = pci.attributes(AttributeOp::Supported, 0)?;
-    if supported & wanted != wanted {
-        return Err(Status::UNSUPPORTED.into());
+/// `decode::enable`'s steps for the console: `PCI attributes Get G,
+/// Supported S, Enable E: STATUS; command C` and, when the config write was
+/// needed, `C0 -> C (set directly)`. A failed Get or Supported shows its
+/// status in place of the value.
+struct Decode<'a>(&'a Enabled<Status>);
+
+impl core::fmt::Display for Decode<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let e = self.0;
+        f.write_str("PCI attributes Get ")?;
+        match e.original {
+            Ok(v) => write!(f, "{v:#x}")?,
+            Err(s) => write!(f, "{s:?}")?,
+        }
+        f.write_str(", Supported ")?;
+        match e.supported {
+            Ok(v) => write!(f, "{v:#x}")?,
+            Err(s) => write!(f, "{s:?}")?,
+        }
+        match e.enable {
+            Ok(()) => write!(f, ", Enable {:#x}: SUCCESS", e.by_attributes)?,
+            Err(s) => write!(f, ", Enable: {s:?} (accepted alone {:#x})", e.by_attributes)?,
+        }
+        match e.command_before {
+            Some(before) => write!(f, "; command {before:#06x} -> {:#06x} (set directly)", e.command),
+            None => write!(f, "; command {:#06x}", e.command),
+        }
     }
-    pci.attributes(AttributeOp::Enable, wanted)?;
-    Ok(original)
 }
 
 /// The queues could not be stopped: the NIC might still DMA into the
 /// region, so it is never freed. Bus mastering is turned off at the PCI
 /// level instead; the pages stay allocated until reboot.
 fn keep_dma(pci: &PciIo, location: Option<Location>, e: &Error<Status>) {
-    let off = pci.attributes(AttributeOp::Disable, ATTRIBUTE_BUS_MASTER);
+    let off = decode::stop_bus_master(pci);
     println!(
         "stormnic-ixgbe: {}: could not stop DMA: {e:x?}; bus mastering {}, DMA region kept allocated",
         at(location),
@@ -530,9 +563,9 @@ fn log_check(at: &impl core::fmt::Display, dev: u16, c: &rings::Checked) {
     }
 }
 
-fn restore(pci: &PciIo, attributes: u64) {
-    if let Err(e) = pci.attributes(AttributeOp::Set, attributes) {
-        println!("stormnic-ixgbe: could not restore PCI attributes {attributes:#x}: {:?}", e.status());
+fn restore(pci: &PciIo, e: &Enabled<Status>) {
+    if let Err(s) = decode::release(pci, e) {
+        println!("stormnic-ixgbe: could not undo the PCI decode and bus-master changes: {s:?}");
     }
 }
 

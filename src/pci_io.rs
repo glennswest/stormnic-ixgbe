@@ -31,10 +31,6 @@ pub enum AttributeOp {
     Supported = 4,
 }
 
-/// `EFI_PCI_IO_ATTRIBUTE_MEMORY`: the function decodes its memory BARs.
-pub const ATTRIBUTE_MEMORY: u64 = 0x0002;
-/// `EFI_PCI_IO_ATTRIBUTE_BUS_MASTER`: the function may master DMA.
-pub const ATTRIBUTE_BUS_MASTER: u64 = 0x0004;
 /// `AllocateAnyPages` and `EfiBootServicesData`, the only allocation type
 /// and one of the two memory types `AllocateBuffer` accepts.
 const ALLOCATE_ANY_PAGES: u32 = 0;
@@ -195,6 +191,26 @@ impl PciIo {
         .to_result_with_val(|| v)
     }
 
+    /// One word of the function's configuration space.
+    pub fn config_read_u16(&self, offset: u32) -> Result<u16> {
+        let mut v: u16 = 0;
+        // SAFETY: live PciIo interface; the buffer holds exactly one U16.
+        unsafe {
+            (self.pci.read)(self.this(), Width::U16, offset, 1, (&raw mut v).cast())
+        }
+        .to_result_with_val(|| v)
+    }
+
+    pub fn config_write_u16(&self, offset: u32, value: u16) -> Result {
+        let mut v = value;
+        // SAFETY: live PciIo interface; the buffer holds exactly one U16,
+        // which the firmware only reads.
+        unsafe {
+            (self.pci.write)(self.this(), Width::U16, offset, 1, (&raw mut v).cast())
+        }
+        .to_result()
+    }
+
     pub fn location(&self) -> Result<Location> {
         let mut l = Location { segment: 0, bus: 0, device: 0, function: 0 };
         // SAFETY: `self` is a live PciIo interface; the four out-pointers are
@@ -283,5 +299,31 @@ impl PciIo {
         let mut r: u64 = 0;
         // SAFETY: live PciIo interface; `r` is a valid out-pointer.
         unsafe { (self.attributes)(self.this(), op, attributes, &raw mut r) }.to_result_with_val(|| r)
+    }
+}
+
+/// Start's memory decode and bus mastering (`decode`) through this PciIo.
+impl crate::decode::Pci for PciIo {
+    type Status = Status;
+    fn get(&self) -> core::result::Result<u64, Status> {
+        self.attributes(AttributeOp::Get, 0).map_err(|e| e.status())
+    }
+    fn supported(&self) -> core::result::Result<u64, Status> {
+        self.attributes(AttributeOp::Supported, 0).map_err(|e| e.status())
+    }
+    fn enable(&self, attributes: u64) -> core::result::Result<(), Status> {
+        self.attributes(AttributeOp::Enable, attributes).map(|_| ()).map_err(|e| e.status())
+    }
+    fn disable(&self, attributes: u64) -> core::result::Result<(), Status> {
+        self.attributes(AttributeOp::Disable, attributes).map(|_| ()).map_err(|e| e.status())
+    }
+    fn set(&self, attributes: u64) -> core::result::Result<(), Status> {
+        self.attributes(AttributeOp::Set, attributes).map(|_| ()).map_err(|e| e.status())
+    }
+    fn config_read_u16(&self, offset: u32) -> core::result::Result<u16, Status> {
+        PciIo::config_read_u16(self, offset).map_err(|e| e.status())
+    }
+    fn config_write_u16(&self, offset: u32, value: u16) -> core::result::Result<(), Status> {
+        PciIo::config_write_u16(self, offset, value).map_err(|e| e.status())
     }
 }
