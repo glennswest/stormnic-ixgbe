@@ -101,7 +101,9 @@ driver on its media, then calls the binding for each controller:
   Handles without PciIo, and non-Intel or non-network functions, are
   declined silently.
 - **Start** keeps PciIo open BY_DRIVER, enables memory decode and bus
-  mastering (saving the PCI attributes it found) and brings the NIC up through BAR0
+  mastering ([how](docs/bring-up.md#memory-decode-and-bus-mastering-19):
+  PciIo `Attributes` where the firmware takes them, the PCI command
+  register where it refuses, as AMI Aptio 4 does) and brings the NIC up through BAR0
   (`src/hardware.rs` and its modules, in the order of `docs/spec/phy.md`
   section 9; see the [bring-up notes](docs/bring-up.md)):
   1. quiesce, and read MMNGC's manageability veto once;
@@ -144,15 +146,15 @@ driver on its media, then calls the binding for each controller:
      ExitBootServices event stops them again. See
      [Simple Network Protocol](docs/snp.md).
 
-  A PCI I/O error or a removed device fails Start: it restores the
-  attributes, releases PciIo and returns DEVICE_ERROR. A PHY or link step
+  A PCI I/O error or a removed device fails Start: it undoes its PCI
+  attribute and command-register changes, releases PciIo and returns DEVICE_ERROR. A PHY or link step
   that fails otherwise is logged and skipped, and Start reports link from
   LINKS alone. Examples: a semaphore firmware holds (never taken from it),
   no PHY, an I2C or sideband error, no NVM init sequence.
 - **Stop** with the child uninstalls the SNP and device path from it (and
   fails, keeping it, while MNP still holds the SNP). Stop without children
-  stops the queues, unmaps and frees the DMA region, restores the PCI
-  attributes and drops the PciIo open. If the queues can't be stopped,
+  stops the queues, unmaps and frees the DMA region, undoes its PCI
+  attribute and command-register changes and drops the PciIo open. If the queues can't be stopped,
   bus mastering is disabled and the region is left allocated (never freed
   under a NIC that might still write to it).
 
@@ -243,9 +245,12 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC: Stop: SNP child removed` | Stop with the child |
 | `stormnic-ixgbe: LOC: Stop: SNP child still in use (STATUS); kept` | Stop, the SNP is still open (returns DEVICE_ERROR) |
 | `stormnic-ixgbe: LOC 8086:DDDD: Start could not open PciIo BY_DRIVER: STATUS` | Start, failure |
-| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: STATUS` | Start, failure |
+| `stormnic-ixgbe: LOC 8086:DDDD: PCI attributes Get G, Supported S, Enable 0xE: SUCCESS; command 0xCCCC` | Start: memory decode and bus mastering through PciIo `Attributes` (G or S is a STATUS when that call failed) |
+| `stormnic-ixgbe: LOC 8086:DDDD: PCI attributes … Enable: STATUS (accepted alone 0xE); command 0xC0 -> 0xC1 (set directly)` | Start: the firmware refused `Enable` (AMI Aptio 4, #19); MSE/BME set in the PCI command register instead |
+| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: command 0xCCCC after PCI attributes …` | Start, failure: MSE/BME still clear after the config write (returns UNSUPPORTED) |
+| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: command register access failed: STATUS` | Start, failure (returns UNSUPPORTED) |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: bring-up failed: ERROR; releasing` | Start, quiesce/reset/NVM/MAC failed or the device went away (returns DEVICE_ERROR); ERROR is e.g. `Timeout { register: .., .. }`, `MissingNvm`, `InvalidMac`, `Removed`, `Io(..)`, or `Semaphore { .. }` when the reset's PHY semaphore is held |
-| `stormnic-ixgbe: could not restore PCI attributes 0xX: STATUS` | Stop or failed Start |
+| `stormnic-ixgbe: could not undo the PCI decode and bus-master changes: STATUS` | Stop or failed Start |
 | `stormnic-ixgbe: LOC: Stop: released` | Stop |
 | `stormnic-ixgbe: Stop for a controller this driver never started` | Stop, unknown controller (returns DEVICE_ERROR) |
 

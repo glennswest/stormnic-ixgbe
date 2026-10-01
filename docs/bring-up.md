@@ -298,7 +298,39 @@ wrapper again could not append its read-only `runs.jsonl`; no host change
 was attempted. This verifies the unchanged scaffold/common primitives only,
 not PHY bring-up or a live link. The subsequent commit records these results.
 
+## Memory decode and bus mastering (#19)
+
+Server3 (X9SRD-F, AMI Aptio 4 BIOS 3.0a, 8086:1557) logged `Start could not
+enable memory decode and bus mastering: UNSUPPORTED` with the first code,
+which read Get and Supported, refused itself when Supported lacked MEMORY or
+BUS_MASTER, and then called Enable(MEMORY | BUS_MASTER), all fatal. It never
+asked for DUAL_ADDRESS_CYCLE or I/O decode, so the UNSUPPORTED came from one
+of those three steps; the old line did not say which. iPXE on the same blade
+works.
+
+`src/decode.rs` (UEFI-independent, `test/decode.rs`) now:
+
+1. reads `Get` (to restore) and `Supported`; a failure of either is logged,
+   not fatal;
+2. calls `Enable` with MEMORY | BUS_MASTER masked by Supported (both when
+   Supported failed); if that fails, each bit alone;
+3. reads the PCI command register (config 0x04, 16 bits). If Memory Space
+   Enable (bit 1) and Bus Master Enable (bit 2) are not both set, it sets
+   them with a 16-bit config write (a 32-bit write would clear the status
+   register's write-1-to-clear bits) and reads back. Start fails only if
+   they are still clear, or config space can't be accessed.
+
+One console line shows every step: `PCI attributes Get G, Supported S,
+Enable ...; command C [-> C' (set directly)]`. The next server3 boot names
+the step AMI refuses. Release undoes only what was done. If `Enable` took
+bits, it calls `Set(original)`, or `Disable` of those bits when Get failed.
+If the config write was needed, MSE/BME go back to their old values. The
+"could not stop DMA" path disables BUS_MASTER and also clears BME in the
+command register.
+
 ## Start integration and 82599/X540 link setup (2026-09-29, link setup superseded by #13)
+
+(The attribute handling below was replaced by #19, above.)
 
 Start opens PciIo BY_DRIVER, reads the PCI attributes (Get), checks memory
 decode is supported, and enables `EFI_PCI_IO_ATTRIBUTE_MEMORY`. Bus mastering

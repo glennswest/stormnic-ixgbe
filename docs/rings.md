@@ -80,8 +80,9 @@ the rest of a written-back descriptor.
 
 ## In Start (binding)
 
-Start now enables PCI **bus mastering** along with memory decode. Stop and a
-failed Start restore the original attributes. After bring-up, Start:
+Start now enables PCI **bus mastering** along with memory decode (see
+[bring-up notes](bring-up.md#memory-decode-and-bus-mastering-19)). Stop and
+a failed Start undo that. After bring-up, Start:
 
 1. allocates and maps the region. If that fails, Start fails with
    DEVICE_ERROR and the NIC is released;

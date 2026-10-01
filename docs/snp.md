@@ -46,8 +46,8 @@ Stop is called twice by DisconnectController: first with the child, which
 closes the child's PciIo open and uninstalls its protocols (if MNP still
 holds the SNP, the uninstall fails, the open is put back and Stop returns
 DEVICE_ERROR); then with no children, which stops the queues, closes the
-events, frees the Port, unmaps and frees the DMA region, restores the PCI
-attributes and closes PciIo BY_DRIVER.
+events, frees the Port, unmaps and frees the DMA region, undoes the PCI
+attribute and command-register changes and closes PciIo BY_DRIVER.
 
 ## Mode
 
