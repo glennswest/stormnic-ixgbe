@@ -104,22 +104,23 @@ pub fn enable<P: Pci>(pci: &P) -> Result<Enabled<P::Status>, Error<P::Status>> {
     Ok(e)
 }
 
-/// Put the function back as `enable` found it. Returns the first failure;
-/// the other steps run anyway.
+/// Put the function back as `enable` found it, in reverse order: the
+/// command register to its state after `Enable`, then the attributes.
+/// Returns the first failure; the other step runs anyway.
 pub fn release<P: Pci>(pci: &P, e: &Enabled<P::Status>) -> Result<(), P::Status> {
     let mut r = Ok(());
+    if let Some(before) = e.command_before {
+        r = pci.config_read_u16(COMMAND).and_then(|now| {
+            pci.config_write_u16(COMMAND, (now & !COMMAND_WANTED) | (before & COMMAND_WANTED))
+        });
+    }
     if e.by_attributes != 0 {
-        r = match e.original {
+        let a = match e.original {
             Ok(original) => pci.set(original),
             Err(_) => pci.disable(e.by_attributes),
         };
-    }
-    if let Some(before) = e.command_before {
-        let w = pci.config_read_u16(COMMAND).and_then(|now| {
-            pci.config_write_u16(COMMAND, (now & !COMMAND_WANTED) | (before & COMMAND_WANTED))
-        });
         if r.is_ok() {
-            r = w;
+            r = a;
         }
     }
     r
