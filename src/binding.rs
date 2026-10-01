@@ -600,6 +600,12 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
         if id.link_reset { "LNK_RST, link was down" } else { "RST" },
         id.lan, m[0], m[1], m[2], m[3], m[4], m[5]
     );
+    if let Some(last) = id.cfg_pending {
+        println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: EEMNGCTL CFG_DONE{} not set after 1 s (EEMNGCTL {last:#010x}); NVM auto-read done, continuing",
+            id.lan
+        );
+    }
     let setup = match prepared.map(|p| hardware::setup_link(&mut io, port, veto, p)) {
         Some(Ok(s)) => { log_setup(&at, dev, &s); Some(s) }
         Some(Err(e)) if fatal(&e) => return Err(e),

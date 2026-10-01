@@ -227,9 +227,15 @@ pub struct Identity {
     pub mac: [u8; 6],
     /// The reset used: CTRL.RST (link was up, or X540) or CTRL.LNK_RST.
     pub link_reset: bool,
+    /// EEMNGCTL as last read when this port's CFG_DONE bit stayed clear
+    /// for the whole 1 s wait; None when it set. Not fatal (#21): on the
+    /// X9 blades, whose 82599 is shared with the BMC, it never sets, while
+    /// EEC.AUTO_RD and EE_PRES have already confirmed the NVM load.
+    pub cfg_pending: Option<u32>,
 }
 
 /// MAC reset (spec 5.13, 6.7, 7.11), NVM completion, and the per-port MAC.
+/// The EEMNGCTL.CFG_DONE wait is bounded and only reported (`cfg_pending`).
 ///
 /// CTRL.LNK_RST when the link is down, CTRL.RST when it is up (a link reset
 /// could reset a PHY manageability is using); the X540 always uses RST. The
@@ -256,8 +262,13 @@ pub fn reset<Io: Registers>(io: &mut Io, port: Port) -> R<Identity, Io::Error> {
     let eec = wait(io, EEC, 1 << 9, 1 << 9, 1000)?;
     // AUTO_RD also sets for absent or invalid NVM; require EE_PRES as well.
     if eec & (1 << 8) == 0 { return Err(Error::MissingNvm); }
+    // CFG_DONE0/1 (bit 18 + LAN_ID): this port's configuration load.
     let cfg = 1 << (18 + port.lan);
-    wait(io, EEMNGCTL, cfg, cfg, 1000)?;
+    let cfg_pending = match wait(io, EEMNGCTL, cfg, cfg, 1000) {
+        Ok(_) => None,
+        Err(Error::Timeout { last, .. }) => Some(last),
+        Err(e) => return Err(e),
+    };
     wait(io, RDRXCTL, 1 << 3, 1 << 3, 1000)?;
     match port.family {
         Family::F82599 => f82599::after_reset(io)?,
@@ -271,7 +282,7 @@ pub fn reset<Io: Registers>(io: &mut Io, port: Port) -> R<Identity, Io::Error> {
     if high & (1 << 31) == 0 || mac == [0; 6] || mac[0] & 1 != 0 {
         return Err(Error::InvalidMac);
     }
-    Ok(Identity { lan: port.lan, mac, link_reset: bits == LNK_RST })
+    Ok(Identity { lan: port.lan, mac, link_reset: bits == LNK_RST, cfg_pending })
 }
 
 /// One 16-bit NVM word through EERD (82599 datasheet 8.2.3.2.2: bit 0

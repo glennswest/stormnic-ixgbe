@@ -201,6 +201,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: CS4227 reset\|CS4227 already reset` | Start, X552 15ac |
 | `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N (NW_MNG_IF_SEL X)[, power-up stall released], reset\|not reset (veto)` | Start, X552 15ad (PHY `X557`) |
 | `stormnic-ixgbe: LOC 8086:DDDD: reset (RST\|LNK_RST, link was down), LAN N, MAC xx:xx:xx:xx:xx:xx` | Start, MAC reset done, NVM MAC read |
+| `stormnic-ixgbe: LOC 8086:DDDD: EEMNGCTL CFG_DONEn not set after 1 s (EEMNGCTL 0xXXXXXXXX); NVM auto-read done, continuing` | Start, after the reset: this port's configuration-done bit never set (seen on the X9 blades, #21); not fatal |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup failed: ERROR; reporting LINKS only` | Start, link setup failed (e.g. `NoInitSequence { key: .. }`, `PipelineReset`, `Sideband { .. }`, `Semaphore { .. }`) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: NVM mode MODE (AUTOC X AUTOC2 X), already as the NVM set it\|advertisement rewritten[, AN complete\|, AN not complete after 4.5 s]` | Start, 82599 backplane/CX4 |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE (AUTOC X AUTOC2 X)` | Start, 82599 SFP+/QSFP+, no module (MODULE `none …`) |

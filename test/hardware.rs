@@ -377,7 +377,7 @@ fn x552_sfp_reset_holds_the_shared_i2c_mask_and_redoes_the_mux() {
 }
 #[test]
 fn reset_and_nvm_waits_are_bounded() {
-    for reg in [0, 0x10010, 0x10110, 0x2f00] {
+    for reg in [0, 0x10010, 0x2f00] {
         let mut io = Fake::ready(0);
         if reg == 0 { io.stuck = Some(0); }
         else { io.regs.insert(reg, 0); }
@@ -385,6 +385,25 @@ fn reset_and_nvm_waits_are_bounded() {
             Err(Error::Timeout { register, .. }) if register == reg));
         assert!(!io.ops.contains(&Op::Read(0xa200)));
         assert!(io.ops.len() < 3000);
+    }
+}
+#[test]
+fn cfg_done_that_never_sets_is_reported_not_fatal() {
+    // server3 (X9, 8086:1557, #21): EEMNGCTL reads 0x80000196, no CFG_DONE.
+    for lan in [0, 1] {
+        let mut io = Fake::ready(lan);
+        io.regs.insert(0x10110, 0x8000_0196 | (1 << (19 - lan))); // the other port's bit only
+        let id = hardware::reset(&mut io, port(Family::F82599, 0x1557, lan as u8)).unwrap();
+        assert_eq!(id.cfg_pending, Some(0x8000_0196 | (1 << (19 - lan))));
+        assert_eq!(id.mac, [2, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        let polls = io.ops.iter().filter(|op| **op == Op::Read(0x10110)).count();
+        assert_eq!(polls, 1001, "bounded to 1 s");
+        assert!(io.ops.contains(&Op::Read(0x2f00)), "RDRXCTL wait still runs");
+    }
+    for lan in [0, 1] {
+        let mut io = Fake::ready(lan);
+        let id = hardware::reset(&mut io, port(Family::F82599, 0x1557, lan as u8)).unwrap();
+        assert_eq!(id.cfg_pending, None);
     }
 }
 #[test]

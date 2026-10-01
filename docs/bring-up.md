@@ -154,6 +154,9 @@ rustnic media). What their SOL logs should settle:
    (expected > 5).
 7. **Reset type**: `reset (RST)` or `reset (LNK_RST, link was down)`. The link
    should come up either way.
+8. **CFG_DONE** (#21): on server3, expect the `EEMNGCTL CFG_DONE0 not set`
+   line straight after the reset line, then the link setup. The BMC (SOL,
+   IPMI LAN) should stay reachable across Start.
 
 Not checkable on server1 (no such hardware known):
 - X540: items 3 (PHY MDIO address) and 13 (7.0xC800 decode).
@@ -226,6 +229,20 @@ for the first millisecond; reset completion is bounded to 100 ms, followed by
 manageability configuration, and DMA initialization each have a one-second
 bound. NVM presence is checked separately because auto-read completion also
 occurs when no valid NVM is present.
+
+The manageability configuration wait (EEMNGCTL.CFG_DONE0/1, bit 18 + LAN_ID)
+is the one wait that is reported, not fatal (#21). On server3 (X9SRD-F,
+8086:1557 shared with the BMC) EEMNGCTL reads `0x80000196` after reset with
+neither CFG_DONE bit set, and iPXE and Linux both run that NIC; Linux's
+driver also only logs this timeout. EEC.AUTO_RD and EE_PRES have already
+confirmed the NVM load by then, so Start logs `EEMNGCTL CFG_DONE<n> not set
+after 1 s (EEMNGCTL 0x...); NVM auto-read done, continuing` and carries on.
+A removed device or a PCI I/O error during the wait is still fatal.
+
+Manageability sideband (NC-SI to the BMC) is left alone: when the link is up
+the reset is CTRL.RST, not LNK_RST, so the link the BMC is using is not
+reset; with MMNGC.MNG_VETO set there is no PHY reset, AN restart, AUTOC write
+or laser change; and the quiesce only stops host DMA.
 
 RAR0 is read only after the reset and NVM completion. It contains the port's
 NVM-provisioned address, not a previous driver's station-address override.
