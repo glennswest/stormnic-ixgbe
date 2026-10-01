@@ -157,6 +157,12 @@ rustnic media). What their SOL logs should settle:
 8. **CFG_DONE** (#21): on server3, expect the `EEMNGCTL CFG_DONE0 not set`
    line straight after the reset line, then the link setup. The BMC (SOL,
    IPMI LAN) should stay reachable across Start.
+   **Seen on server3, 2026-10-01** (rustnic media at 563ea8d): `reset (RST),
+   LAN 0`, then `EEMNGCTL CFG_DONE0 not set after 1 s (EEMNGCTL 0x80000196)`,
+   link setup (passive DA, 10G SFI, SFI firmware 0x107), `link up 10000 Mb/s`,
+   `Start: bound, SNP on a child handle`. stormbootx then leased an address
+   over the SNP and claimed its boothost. The SOL capture ran without a gap
+   across Start.
 
 Not checkable on server1 (no such hardware known):
 - X540: items 3 (PHY MDIO address) and 13 (7.0xC800 decode).

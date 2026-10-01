@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-10-01
+- **docs:** #21 verified on server3 (rustnic media at 563ea8d): the CFG_DONE0 timeout is logged and Start continues to a 10G link, an SNP child and a DHCP lease through stormbootx. Work plan and bring-up hardware checks updated.
 - **docs:** Work plan: #21 done in code at 563ea8d; the server3 boot waits on stormbootx#65 (rustnic media pin).
 - **fix:** The MAC reset's EEMNGCTL.CFG_DONE wait (bit 18 + LAN_ID) is no longer fatal (#21). On server3 (X9, 8086:1557, shared with the BMC) it never sets (`last: 80000196`) and Start failed there. EEC.AUTO_RD + EE_PRES already confirm the NVM load, so `hardware::reset` reports the pending value in `Identity::cfg_pending` and Start logs `EEMNGCTL CFG_DONEn not set after 1 s ...; continuing`. I/O errors and a removed device are still fatal. New test; README console line; bring-up notes, including how the reset leaves the BMC's sideband alone.
 - **docs:** #19 verified on server3 (rustnic media at 8ea722a): the PCI attributes step now succeeds (`Enable 0x2: SUCCESS; command 0x0007`; AMI's Supported lacks BUS_MASTER). The next failure, the reset's EEMNGCTL.CFG_DONE0 wait, is filed as #21. Work plan updated.
