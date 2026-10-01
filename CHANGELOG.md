@@ -6,6 +6,7 @@
 - **fix:** `decode::release` undoes the command register before the attributes, so a bit `Enable` set is not put back by the config restore (#19, caught by `test/decode.rs`).
 - **fix:** Start on AMI Aptio 4 (#19; server3, X9SRD-F, 8086:1557: `Start could not enable memory decode and bus mastering: UNSUPPORTED`). New `src/decode.rs`: PciIo `Get`/`Supported` are advisory. `Enable` asks only for supported bits, and if refused tries each bit alone. Then the PCI command register is checked; if MSE/BME are still clear they are set with a 16-bit config write and read back. Start fails only if they still are not set. A new console line shows each step's result. Release undoes exactly what was done. Clearing bus mastering when DMA can't be stopped also clears BME in config space. `pci_io`: 16-bit config read/write. 11 tests against a fake firmware (`test/decode.rs`).
 - **docs:** README (Start, Stop, console lines), bring-up notes (memory decode and bus mastering), rings and SNP notes, work plan.
+- **docs:** Work plan: #19 done in code at 8ea722a; the server3 boot waits on stormbootx#63 (rustnic media pin).
 
 ### 2026-09-29
 - **docs:** Work plan: the #3 blade check was never booted from stormbootx#48's golden; it now rides on the server1 boot in stormbootx#51.
