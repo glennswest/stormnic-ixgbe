@@ -6,7 +6,7 @@
 //! child handle carrying the SNP and a device path (the controller's, plus a
 //! MAC address node). The child opens the controller's PciIo
 //! BY_CHILD_CONTROLLER, so DisconnectController on the NIC stops the child
-//! first. The firmware's MNP binds to the child and drives it.
+//! first. stormbootx opens the child's SNP EXCLUSIVE and drives it.
 //!
 //! Every call runs at TPL_CALLBACK (the spec's limit for SNP), so a timer
 //! poll never enters the driver while another call is in it. WaitForPacket

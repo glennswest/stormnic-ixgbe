@@ -15,7 +15,7 @@
 //! link). It then maps the descriptor rings and buffers (`hardware::rings`,
 //! #3), runs the DMA check on a link that is up, and stops the queues again.
 //! Last it makes the SNP child handle (`snp`, #4): nothing DMAs until the
-//! firmware's MNP initializes that SNP. Stop with children removes the child;
+//! SNP's user (stormbootx's smoltcp) initializes it. Stop with children removes the child;
 //! Stop without unmaps and frees the DMA region, undoes what Start did to
 //! the PCI attributes and command register, and releases PciIo.
 //!

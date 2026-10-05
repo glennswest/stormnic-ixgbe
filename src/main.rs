@@ -5,7 +5,7 @@
 //! firmware's `ConnectController` (stormbootx runs it after loading every
 //! driver on its media) then calls Supported/Start for each controller.
 //! Start brings the NIC up and puts an `EFI_SIMPLE_NETWORK_PROTOCOL` on a
-//! child handle, which the firmware's MNP, IP4 and TCP4 bind on top of.
+//! child handle; stormbootx opens it EXCLUSIVE and runs smoltcp on it.
 #![no_main]
 #![no_std]
 
