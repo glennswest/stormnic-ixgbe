@@ -7,8 +7,9 @@ datasheets. **PHY and link programming follows `docs/spec/phy.md`**, the
 independent specification written from Intel's BSD-licensed shared code (#13).
 See [PHY and link programming per the spec](#phy-and-link-programming-per-the-spec-13-2026-09-29),
 which supersedes the earlier 82599/X540 datasheet link setup and the first
-X552 implementation described further down. Nothing here has run on
-hardware yet. The checks to make on server1 are listed in
+X552 implementation described further down. The 82599 SFP+ path has run
+on hardware (server3, 8086:1557, 2026-10-01: 10G SFI link on a passive DA
+cable); the X540 and X552 paths have not. See
 [Hardware checks](#hardware-checks-spec-section-10).
 
 ## PHY and link programming per the spec (#13, 2026-09-29)
@@ -134,8 +135,14 @@ recommendation).
 
 ### Hardware checks (spec section 10)
 
-server1 and server2 are 8086:1557, an 82599 SFP+ (stormbootx#44/#45's
-rustnic media). What their SOL logs should settle:
+The X9 blades' Intel ports are 8086:1557, an 82599 SFP+ (server1 at
+0000:03:00.0; server3, ac:1f:6b:8a:a4:5c, booted on the rustnic media,
+stormbootx#45). server3's 2026-10-01 log (563ea8d, below under item 8)
+settles items 1, 2, 4, 5, 6 and 7 for that board: NVM AUTOC c09c6084 kept
+as 10G SFI, `laser on`, `link up 10000 Mb/s`, a passive DA multispeed
+module, SFI firmware 0x107 and `reset (RST)` (the link was up). Still open
+there: item 3 (an empty cage) and the LNK_RST path. What a log should
+settle:
 
 1. **NVM default LMS** (item 10): the `NVM AUTOC` value in the `link setup:
    module …` line. The spec takes capabilities from it (5.6). If a board's NVM
@@ -164,7 +171,7 @@ rustnic media). What their SOL logs should settle:
    over the SNP and claimed its boothost. The SOL capture ran without a gap
    across Start.
 
-Not checkable on server1 (no such hardware known):
+Not checkable on the X9 blades (no such hardware known):
 - X540: items 3 (PHY MDIO address) and 13 (7.0xC800 decode).
 - X552: items 4–5 (NW_MNG_IF_SEL and INT_PHY_MODE on 15ad), 6–7 (IOSF order,
   AN_RESTART self-clear), 8–9 (CS4227 checksum and the scratch handshake over
@@ -344,8 +351,11 @@ works.
    they are still clear, or config space can't be accessed.
 
 One console line shows every step: `PCI attributes Get G, Supported S,
-Enable ...; command C [-> C' (set directly)]`. The next server3 boot names
-the step AMI refuses. Release undoes only what was done. If `Enable` took
+Enable ...; command C [-> C' (set directly)]`. On server3 (2026-10-01,
+8ea722a) it read `Get 0x700, Supported 0x8000000000078763, Enable 0x2:
+SUCCESS; command 0x0007`: AMI's Supported has MEMORY but not BUS_MASTER,
+which the old code refused, and BME was already set in the command
+register. Release undoes only what was done. If `Enable` took
 bits, it calls `Set(original)`, or `Disable` of those bits when Get failed.
 If the config write was needed, MSE/BME go back to their old values. The
 "could not stop DMA" path disables BUS_MASTER and also clears BME in the

@@ -5,20 +5,23 @@ A UEFI driver, in Rust (`no_std`), that gives firmware an
 
 ## Why it exists
 
-stormbootx boots a machine over NVMe/TCP using the firmware's own TCP/IP
-stack (`EFI_TCP4`). That stack needs a NIC driver underneath it. Some
-platforms have the stack but no UEFI driver for their NIC: the Supermicro X9
-blades (server1–8) have only legacy option ROMs for their Intel 10G and
-ConnectX-3 ports, so no network handle exists and `EFI_TCP4` never appears
-(stormbootx#26).
+stormbootx boots a machine over NVMe/TCP. Since stormbootx v0.9.0
+(stormbootx#56) it carries its own TCP/IP stack, smoltcp, and runs it
+directly on each NIC's `EFI_SIMPLE_NETWORK_PROTOCOL`, which it opens
+`EXCLUSIVE` (a firmware MNP bound to it lets go). It no longer uses the
+firmware's `EFI_TCP4`. Either way it needs a NIC driver that provides an SNP.
+Some platforms have none: the Supermicro X9 blades (server1–8) have only
+legacy option ROMs for their Intel 10G and ConnectX-3 ports, so no network
+handle exists (stormbootx#26).
 
 stormbootx loads every `*.efi` in `\stormboot\drivers` on its boot media
-before it looks for TCP4. This driver is one of them. The firmware's MNP, IP4
-and TCP4 drivers bind on top of the SNP it installs. There is no PXE, no DHCP
-boot and no network code of its own above the link layer.
+and connects controllers before it looks for SNPs. This driver is one of
+them. On success stormbootx prints `tcp4 : smoltcp over SNP (nic N MAC)`.
+The driver has no PXE, no DHCP and no network code of its own above the
+link layer.
 
 The interim driver is iPXE's `ipxe-intelx.efi` (GPL-2 C, built from pinned
-source). This crate replaces it (stormbootx#27).
+source). This crate replaces it (#5, stormbootx#27).
 
 ## Hardware
 
@@ -79,12 +82,26 @@ no input apart from the PCI functions the firmware offers it.
 ## How it ships
 
 The driver is a file in `\stormboot\drivers` on the stormbootx boot media.
-It is not a stormcentral component and has no golden. sc-build keeps nothing
-from a build. So stormbootx has to build the `.efi` from a pinned commit, the
-way its `scripts/build-nic-drivers.sh` builds iPXE's drivers. Build it with
-`cargo build --locked --release --target x86_64-unknown-uefi` from any
-commit at or after the one that added `Cargo.lock` (#11). That isn't done
-yet: **stormbootx#29**. Until it lands, the driver can't reach any media.
+It is not a stormcentral component and has no golden of its own. stormbootx
+builds it from a pinned commit (stormbootx#29, done 2026-09-28):
+`scripts/build-nic-drivers.sh` there fetches this repo at
+`STORMNIC_IXGBE_REF` and runs `cargo build --locked --release --target
+x86_64-unknown-uefi` (stormbootx#43), checks subsystem 11, and records the
+commit and digest in `STORMNIC-SOURCE.txt`. At this writing the pin is
+563ea8d.
+
+- **`nic-drivers` golden and the normal `stormbootx` media:** the driver is
+  carried as `stormnic-ixgbe.efi.off`, which stormbootx does not load. The
+  normal media still uses `ipxe-intelx.efi`.
+- **`stormbootx-rustnic` media golden** (stormbootx#45): built with
+  `STORMNIC_ON_MEDIA="ixgbe mlx4"`, it carries `stormnic-ixgbe.efi` (and
+  stormnic-mlx4) in place of iPXE's NIC drivers. Its console shows
+  `media : rustnic ixgbe@<sha> mlx4@<sha>`.
+
+A new driver commit reaches a blade by asking stormbootx (an issue there) to
+move `STORMNIC_IXGBE_REF` and rebuild the rustnic golden; the master boots
+the blade from it. Making the driver the default on the normal media, and
+dropping `ipxe-intelx.efi`, is #5 (stormbootx#27).
 
 ## What it does today
 
@@ -141,8 +158,10 @@ driver on its media, then calls the binding for each controller:
      [descriptor rings and DMA](docs/rings.md);
   7. installs `EFI_SIMPLE_NETWORK_PROTOCOL` and a device path (the
      controller's, plus a MAC address node) on a **child handle**, which
-     opens the controller's PciIo BY_CHILD_CONTROLLER. The firmware's MNP
-     binds to the child; the SNP's Initialize starts the queues. An
+     opens the controller's PciIo BY_CHILD_CONTROLLER. stormbootx opens the
+     child's SNP `EXCLUSIVE` and drives it with smoltcp (on other firmware
+     paths the firmware's MNP may bind to it); the SNP's Initialize starts
+     the queues. An
      ExitBootServices event stops them again. See
      [Simple Network Protocol](docs/snp.md).
 
@@ -152,7 +171,8 @@ driver on its media, then calls the binding for each controller:
   LINKS alone. Examples: a semaphore firmware holds (never taken from it),
   no PHY, an I2C or sideband error, no NVM init sequence.
 - **Stop** with the child uninstalls the SNP and device path from it (and
-  fails, keeping it, while MNP still holds the SNP). Stop without children
+  fails, keeping it, while a consumer such as stormbootx still has the SNP
+  open). Stop without children
   stops the queues, unmaps and frees the DMA region, undoes its PCI
   attribute and command-register changes and drops the PciIo open. If the queues can't be stopped,
   bus mastering is disabled and the region is left allocated (never freed
@@ -175,7 +195,9 @@ children.
 
 **Don't put this driver on media next to `ipxe-intelx.efi`:** whichever
 binds a NIC first holds it, and which one that is depends on load order.
-Retiring iPXE's driver is #5 (stormbootx#27), after the server1 check.
+The rustnic media carries this driver without iPXE's; retiring iPXE's driver
+from the normal media is #5 (stormbootx#27). The blade check it waited for
+passed on server3 on 2026-10-01 (see Status).
 
 ### Console output
 
@@ -238,7 +260,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: could not unmap\|free the DMA region: STATUS` | Stop or failed Start |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound, SNP on a child handle, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Start, success |
 | `stormnic-ixgbe: LOC 8086:DDDD: SNP not installed: STATUS; releasing` | Start, the child handle could not be made (returns DEVICE_ERROR) |
-| `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | SNP Initialize (MNP's first use) |
+| `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | SNP Initialize (the first use: stormbootx's smoltcp) |
 | `stormnic-ixgbe: LOC: SNP receive filters 0xNN, N multicast address(es)` | SNP ReceiveFilters changed the setting or set a list |
 | `stormnic-ixgbe: LOC: SNP station address xx:xx:xx:xx:xx:xx` | SNP StationAddress |
 | `stormnic-ixgbe: LOC: SNP shut down` | SNP Shutdown |
@@ -257,18 +279,31 @@ e.g. `10G+1G+100M`.
 
 ## Status
 
-Scaffold (#1): done; 8086:1557 bound on server1 (#7). Bring-up (#2) with
-PHY and link programming matched to `docs/spec/phy.md` (#13): every family
-and device path runs in Start, checked in simulation (43 tests, including a
-bit-level I2C slave on both I2CCTL layouts for the SFP+ EEPROM, port
-expander and CS4227) and not yet on hardware; the checks for server1 are in
-the [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
-Descriptor rings and DMA (#3): RX/TX queue 0 with legacy descriptors in one
-mapped region, a DMA check in Start, checked in simulation (13 tests against
-a simulated DMA device) and not yet on hardware; see
-[docs/rings.md](docs/rings.md#hardware-checks-server1server2-80861557).
-SNP (#4): `EFI_SIMPLE_NETWORK_PROTOCOL` on a child handle with a MAC device
-path, checked in simulation (16 tests) and not yet on hardware; the
-acceptance is `tcp4 : available` on server1 with only this driver, see
-[docs/snp.md](docs/snp.md#hardware-check-the-acceptance-for-4).
-Next: that boot, then retire `ipxe-intelx.efi` (#5, stormbootx#27).
+Verified on metal on **server3** (X9SRD-F, AMI Aptio 4 3.0a, 82599EN SFP+
+8086:1557, MAC ac:1f:6b:8a:a4:5c) on 2026-10-01, booting the rustnic media
+`golden-stormbootx-rustnic-416b7237c78a29a3` (this driver at 563ea8d): the
+PCI decode fallback (#19), the reset with the CFG_DONE0 timeout reported
+(#21), 10G SFI link setup on a passive DA cable and `link up 10000 Mb/s`
+(#2, #13), the rings (#3) and the SNP (#4). stormbootx then printed `tcp4 :
+smoltcp over SNP`, leased 192.168.16.104/20 over our SNP, reached the engine
+and claimed boothost/server3. The SOL log is quoted in
+[docs/snp.md](docs/snp.md#hardware-check-the-acceptance-for-4). The first
+boot (#7) bound 8086:1557 on server1 with the scaffold.
+
+Simulated tests (`sc-build scripts/test-hardware.sh`): 84 at 563ea8d, for
+bring-up and PHY (including a bit-level I2C slave for the SFP+ EEPROM, port
+expander and CS4227), rings, SNP and PCI decode.
+
+Not verified on hardware:
+- the X540 and X552 paths: no lab hardware (#15, #17, #23);
+- Start's DMA check: on server3 it sent its frame but received nothing in
+  3 s (`GPRC 0`), though the SNP received fine moments later (#24);
+- the spec section 10 items the server3 log does not settle (cage-presence
+  polarity with an empty cage, LNK_RST on a down link), listed in the
+  [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
+
+Open: the console trace is verbose on every boot (#22); the image is not
+byte-reproducible across build directories (#12); 154f, the X552 crosstalk
+fix and QSFP multispeed are not done (#16). Next: make the driver the
+default on the normal media and retire `ipxe-intelx.efi` (#5,
+stormbootx#27).

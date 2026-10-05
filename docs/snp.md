@@ -1,8 +1,12 @@
 # Simple Network Protocol (#4)
 
 Start installs an `EFI_SIMPLE_NETWORK_PROTOCOL` for each NIC it binds, on a
-**child handle** with a **MAC address device path**. The firmware's MNP, IP4
-and TCP4 drivers bind on top of it; stormbootx then finds `EFI_TCP4`.
+**child handle** with a **MAC address device path**. stormbootx (v0.9.0 and
+later, stormbootx#56) opens that SNP `EXCLUSIVE`, which makes the firmware
+disconnect any MNP bound to it, and runs its own TCP/IP stack, smoltcp,
+directly on the SNP calls. It does not use the firmware's `EFI_TCP4`. The
+SNP is a plain UEFI SNP, so on other firmware paths the firmware's MNP, IP4
+and TCP4 can still bind on top of it.
 
 Source: the UEFI specification's Simple Network Protocol section (the
 calls, their statuses, the Mode fields, the state machine) and the driver
@@ -43,8 +47,8 @@ Any failure undoes the steps before it, releases the DMA region and fails
 Start with DEVICE_ERROR (`SNP not installed: STATUS; releasing`).
 
 Stop is called twice by DisconnectController: first with the child, which
-closes the child's PciIo open and uninstalls its protocols (if MNP still
-holds the SNP, the uninstall fails, the open is put back and Stop returns
+closes the child's PciIo open and uninstalls its protocols (if a consumer
+still has the SNP open, the uninstall fails, the open is put back and Stop returns
 DEVICE_ERROR); then with no children, which stops the queues, closes the
 events, frees the Port, unmaps and frees the DMA region, undoes the PCI
 attribute and command-register changes and closes PciIo BY_DRIVER.
@@ -68,8 +72,8 @@ attribute and command-register changes and closes PciIo BY_DRIVER.
 
 ## The calls
 
-Every call raises to TPL_CALLBACK, the spec's limit for SNP, so the MNP's
-timer poll never enters the driver while another call is running. A call on
+Every call raises to TPL_CALLBACK, the spec's limit for SNP, so a caller's
+timer poll (MNP's, or one driving smoltcp) never enters the driver while another call is running. A call on
 a stopped interface returns NOT_STARTED. The data-path calls on a started
 but uninitialized interface return DEVICE_ERROR.
 
@@ -108,8 +112,8 @@ setting doesn't allow, so the filters are exact:
 
 The spec lets a driver keep the caller's buffer until GetStatus returns it.
 This driver copies the frame, so the buffer is free at once, but it is
-still handed back through GetStatus in order: MNP waits for that before it
-reuses a buffer. A caller that never calls GetStatus gets NOT_READY after
+still handed back through GetStatus in order: callers such as MNP wait for
+that before they reuse a buffer. A caller that never calls GetStatus gets NOT_READY after
 64 frames.
 
 ## ExitBootServices
@@ -124,7 +128,7 @@ It prints nothing, because the OS may already have the console.
 |---|---|
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound, SNP on a child handle, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Start, success |
 | `stormnic-ixgbe: LOC 8086:DDDD: SNP not installed: STATUS; releasing` | Start, the child handle could not be made (DEVICE_ERROR) |
-| `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Initialize (MNP's first use) |
+| `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Initialize (the first use: stormbootx's smoltcp) |
 | `stormnic-ixgbe: LOC: SNP receive filters 0xNN, N multicast address(es)` | ReceiveFilters changed the setting or set a list |
 | `stormnic-ixgbe: LOC: SNP station address xx:xx:xx:xx:xx:xx` | StationAddress |
 | `stormnic-ixgbe: LOC: SNP shut down` | Shutdown |
@@ -132,27 +136,48 @@ It prints nothing, because the OS may already have the console.
 | `stormnic-ixgbe: LOC: Stop: SNP child removed` | Stop with the child |
 | `stormnic-ixgbe: LOC: Stop: SNP child still in use (STATUS); kept` | Stop, uninstall refused (DEVICE_ERROR) |
 
-Transmit, Receive and GetStatus print nothing: MNP calls them many times
-a second.
+Transmit, Receive and GetStatus print nothing: the network stack calls them
+many times a second.
 
 ## Hardware check (the acceptance for #4)
 
-Boot server1 with only this driver in `\stormboot\drivers` (no
-`ipxe-intelx.efi`). Expected, after the DMA check lines of `docs/rings.md`:
+The acceptance, restated for stormbootx v0.9.0 and later (#18): with only
+this driver for the Intel NIC on the media, stormbootx prints `tcp4 :
+smoltcp over SNP (nic N MAC)`, gets a DHCP lease and claims its boothost.
+(Before v0.9.0 the acceptance was the firmware's `tcp4 : available`; that
+line no longer appears.)
+
+**Passed on server3, 2026-10-01** (X9SRD-F, 82599EN SFP+ 8086:1557; rustnic
+media `golden-stormbootx-rustnic-416b7237c78a29a3`, this driver at
+563ea8d). The SOL log (`/var/lib/stormcentral/console/server3/sol.log`),
+`stormnic-ixgbe: LOC 8086:1557:` prefixes left out:
 
 ```
-stormnic-ixgbe: 0000:03:00.0 8086:1557 82599EN SFP+: Start: bound, SNP on a child handle, MAC ac:1f:6b:8a:a7:9c, media present
-stormnic-ixgbe: 0000:03:00.0: SNP initialized, MAC ac:1f:6b:8a:a7:9c, media present
-stormnic-ixgbe: 0000:03:00.0: SNP receive filters 0xNN, N multicast address(es)
+PCI attributes Get 0x700, Supported 0x8000000000078763, Enable 0x2: SUCCESS; command 0x0007
+reset (RST), LAN 0, MAC ac:1f:6b:8a:a4:5c
+EEMNGCTL CFG_DONE0 not set after 1 s (EEMNGCTL 0x80000196); NVM auto-read done, continuing
+link setup: module passive DA, multispeed (...), NVM init sequence 79 words, 10G SFI (NVM AUTOC c09c6084, now AUTOC c09c6084 AUTOC2 000a0000), laser on
+SFI firmware patch version 0x107
+link up 10000 Mb/s
+82599EN SFP+: Start: bound, SNP on a child handle, MAC ac:1f:6b:8a:a4:5c, media present
+SNP initialized, MAC ac:1f:6b:8a:a4:5c, media present
 ```
 
-(The filter value is MNP's choice; for IP4 it should include unicast 0x01
-and broadcast 0x04.) Then stormbootx must
-print `tcp4 : available` and claim its boothost. If it doesn't:
-- no `SNP initialized`: MNP didn't bind to the child. Check that the
-  firmware ran ConnectController recursively over the new handle;
-- `SNP initialized` but no DHCP/TCP: look at `media` (LINKS) and at the
-  `DMA check` lines; a `SNP ... failed` line names the register.
+stormbootx then printed `tcp4 : smoltcp over SNP`, `nic 0: leased
+192.168.16.104/20`, reached the engine and claimed boothost/server3. That
+boot exercised the UEFI glue the simulated tests don't: the child handle,
+device path, events, TPL, an `EXCLUSIVE` open of the child's SNP and
+smoltcp's call order. Not yet seen: Stop with the child, when stormbootx
+gives NICs back to the firmware on its fall-through (stormbootx#68).
+
+If a later boot fails:
+- no `SNP initialized`: nothing opened the child's SNP. Check that the
+  firmware ran ConnectController recursively over the new handle and that
+  stormbootx found the SNP;
+- `SNP initialized` but no lease: look at `media` (LINKS) and the
+  `DMA check` lines; a `SNP ... failed` line names the register. The filter
+  setting is the caller's choice; for IPv4 it should include unicast 0x01
+  and broadcast 0x04.
 
 ## Verification
 
@@ -163,7 +188,7 @@ built an x86_64 PE32+, subsystem 11, 97,792-byte image with no warnings.
 `test/snp.rs` covers:
 - the state machine and each state's failure status;
 - Initialize programming RAR0 and clearing the filters;
-- MNP-style transmit: the header filled in the caller's buffer, the
+- transmit with the header filled in by the driver: the header filled in the caller's buffer, the
   TRANSMIT bit, the buffer handed back once;
 - Transmit's parameter checks;
 - NOT_READY from a full ring and from a full recycle queue, and recovery;
@@ -184,7 +209,7 @@ built an x86_64 PE32+, subsystem 11, 97,792-byte image with no warnings.
 The simulated NIC now applies RAR0 from its registers and the MTA with
 MCSTCTRL.MFE, as well as FCTRL.
 
-Not yet run on hardware. The UEFI glue in `src/snp.rs` and
-`src/binding.rs` (the child handle, device path, events, TPL, Stop with
-children) is not covered by the simulated tests; the server1 boot is its
-test.
+The UEFI glue in `src/snp.rs` and `src/binding.rs` (the child handle,
+device path, events, TPL, Stop with children) is not covered by the
+simulated tests; the server3 boot above is its test, Stop with children
+excepted.

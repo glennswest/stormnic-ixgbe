@@ -32,8 +32,8 @@ and layouts for queue 0. None of this came from another driver.
   frame up to the default MAXFRS (1518 with CRC, plus a VLAN tag), so a frame
   never spans descriptors. A descriptor without EOP, or with the CE or RXE
   error bits, is dropped and handed back.
-- **Polled.** Interrupts stay masked, as the reset left them. The firmware's
-  MNP polls the SNP.
+- **Polled.** Interrupts stay masked, as the reset left them. Whatever drives the SNP
+  (stormbootx's smoltcp) polls it.
 - **Queue 0 only.** MRQC stays at its reset value (no RSS), so every frame
   goes to queue 0.
 
@@ -117,12 +117,12 @@ broadcast back to its sender. What it shows on the blade:
 
 A quiet segment can leave the 3 s window empty. That is logged, not an
 error. A frame that comes back as a reply to ours (a real round trip) needs
-the SNP (#4) and the firmware's stack: DHCP DISCOVER is a broadcast, and
+the SNP (#4) and a network stack on it: DHCP DISCOVER is a broadcast, and
 the OFFER is the answer.
 
-## Hardware checks (server1/server2, 8086:1557)
+## Hardware checks (82599 SFP+, 8086:1557)
 
-Expected SOL lines after `link up 10000 Mb/s`:
+Expected SOL lines (the X9 blades' ports; the address differs per blade) after `link up 10000 Mb/s`:
 
 ```
 stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA: 33 pages at device 0x…, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors
@@ -172,4 +172,8 @@ The tests cover:
 - the queue-enable timeouts;
 - filters.
 
-Nothing has run on hardware yet.
+On hardware (server3, 8086:1557, 2026-10-01, this driver at 563ea8d):
+check 1 passed (`broadcast frame sent, 60 bytes (GPTC 1)`); check 2 did not:
+`received nothing in 3000 ms (GPRC 0)`. The rings themselves work: the SNP
+received the DHCP exchange moments later and the blade booted. Why the MAC
+counted no good frames during the 3 s window is open in #24.

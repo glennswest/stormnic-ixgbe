@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-10-04
+- **docs:** Docs refreshed from the code and what changed since 2026-09-28 (#10, #18, #25). stormbootx (v0.9.0+, stormbootx#56) runs smoltcp directly on our SNP, opened `EXCLUSIVE`, not the firmware's MNP/IP4/TCP4: README overview and Start step 7, docs/snp.md (overview, TPL, recycling, console lines) and docs/rings.md say so, and #4's acceptance is restated as `tcp4 : smoltcp over SNP` + lease + boothost claim. How it ships: stormbootx builds the driver `--locked` from `STORMNIC_IXGBE_REF` (563ea8d), carried as `.efi.off` on the normal media and loaded on the `stormbootx-rustnic` golden; replaces the "isn't done yet: stormbootx#29" text. The 2026-10-01 server3 boot recorded as the hardware result for #2, #3, #4 and #19 (README Status, docs/snp.md hardware check with the SOL lines, docs/bring-up.md checks and the PCI attributes result, docs/rings.md with the GPRC 0 open as #24). CLAUDE.md: source rule (datasheets + BSD-3 shared code via docs/spec/phy.md), How it ships, Test (server3, rustnic golden pin), work-plan items checked off.
+
 ### 2026-10-01
 - **docs:** #21 verified on server3 (rustnic media at 563ea8d): the CFG_DONE0 timeout is logged and Start continues to a 10G link, an SNP child and a DHCP lease through stormbootx. Work plan and bring-up hardware checks updated.
 - **docs:** Work plan: #21 done in code at 563ea8d; the server3 boot waits on stormbootx#65 (rustnic media pin).
