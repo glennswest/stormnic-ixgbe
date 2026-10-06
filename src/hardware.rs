@@ -24,6 +24,7 @@ pub const EERD: u32 = 0x10014;
 const RXCTRL: u32 = 0x03000;
 const EIMC: u32 = 0x00888;
 const EEC: u32 = 0x10010;
+const EEC_X553: u32 = 0x15ff8;
 const EEMNGCTL: u32 = 0x10110;
 const RDRXCTL: u32 = 0x02f00;
 const RAL0: u32 = 0x0a200;
@@ -64,9 +65,13 @@ pub enum Error<E> {
     Cs4227 { register: u16, value: u16 },
     /// No external PHY answered on MDIO.
     NoPhy,
-    /// X552 firmware host interface: disabled (HICR.EN clear), or the
-    /// command did not complete with a valid status (spec 11.2).
+    /// Firmware host interface: disabled (HICR.EN clear), the command did
+    /// not complete with a valid status, or its response did not fit
+    /// (spec 11.2, 12.4).
     HostInterface { hicr: u32 },
+    /// A host-interface command completed with a failing return status
+    /// (X553 PHY token, spec 12.5; firmware PHY activity, 12.6).
+    Firmware { command: u8, status: u8 },
     /// PHY soft reset (4.0x0000 bit 15) still set after 3 s (spec 2.6).
     PhyReset,
     /// 82599: the NVM has no init sequence for this module type (spec 5.5).
@@ -92,6 +97,10 @@ pub mod f82599;
 pub mod x540;
 #[path = "x552.rs"]
 pub mod x552;
+#[path = "x553.rs"]
+pub mod x553;
+#[path = "hostif.rs"]
+pub mod hostif;
 #[path = "rings.rs"]
 pub mod rings;
 #[path = "snp_core.rs"]
@@ -143,9 +152,16 @@ fn rxdctl(queue: u32) -> u32 {
     else { 0x0d028 + (queue - 64) * 0x40 }
 }
 
-/// Controller family (spec 1.2).
+/// Controller family (spec 1.2, 12.1). The X550 runs the X540 path with
+/// 2.5G and 5G (spec 12.3); the X553 is the shared code's X550EM_a.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Family { F82599, X540, X552 }
+pub enum Family { F82599, X540, X550, X552, X553 }
+
+impl Family {
+    /// The X540 and X550: integrated copper PHY, CTRL.RST under the PHY
+    /// semaphore and 100 ms (spec 6.7, 12.3).
+    pub fn integrated_copper(self) -> bool { matches!(self, Family::X540 | Family::X550) }
+}
 
 /// The function being brought up: its family, device ID and port number
 /// (STATUS.LAN_ID, spec 1.3: every per-port choice uses it).
@@ -212,13 +228,15 @@ pub enum Prepared {
     F82599(f82599::Prepared),
     X540,
     X552(x552::Prepared),
+    X553(x553::Prepared),
 }
 
 pub fn prepare<Io: Registers>(io: &mut Io, port: Port, veto: bool) -> R<Prepared, Io::Error> {
     Ok(match port.family {
         Family::F82599 => Prepared::F82599(f82599::prepare(io, port, veto)?),
-        Family::X540 => Prepared::X540,
+        Family::X540 | Family::X550 => Prepared::X540,
         Family::X552 => Prepared::X552(x552::prepare(io, port, veto)?),
+        Family::X553 => Prepared::X553(x553::prepare(io, port, veto)?),
     })
 }
 
@@ -241,16 +259,18 @@ pub struct Identity {
 /// The EEMNGCTL.CFG_DONE wait is bounded and only reported (`cfg_pending`).
 ///
 /// CTRL.LNK_RST when the link is down, CTRL.RST when it is up (a link reset
-/// could reset a PHY manageability is using); the X540 always uses RST. The
-/// X540 and the X552 10G_T and SFP devices reset holding their PHY semaphore
-/// (spec 1.4.4). Leaves all host interrupts masked and RX/TX disabled.
+/// could reset a PHY manageability is using); the X540 and X550 always use
+/// RST. The X540, X550 and the X552/X553 copper and SFP devices reset
+/// holding their PHY semaphore (spec 1.4.4, 12.13). The X553's EEC is at
+/// 0x15FF8 (spec 12.2). Leaves all host interrupts masked and RX/TX disabled.
 pub fn reset<Io: Registers>(io: &mut Io, port: Port) -> R<Identity, Io::Error> {
     let up = read(io, LINKS)? & LINK_UP != 0;
-    let bits = if port.family == Family::X540 || up { RST } else { LNK_RST };
+    let bits = if port.family.integrated_copper() || up { RST } else { LNK_RST };
     let mask = match port.family {
         Family::F82599 => 0,
-        Family::X540 => sync::phy(port.lan),
+        Family::X540 | Family::X550 => sync::phy(port.lan),
         Family::X552 => x552::reset_mask(port),
+        Family::X553 => x553::reset_mask(port),
     };
     let ctrl = read(io, CTRL)?;
     if mask != 0 { sync::acquire(io, port, mask)?; }
@@ -260,9 +280,10 @@ pub fn reset<Io: Registers>(io: &mut Io, port: Port) -> R<Identity, Io::Error> {
     if mask != 0 { sync::release(io, port, mask)?; }
     written?;
     wait(io, CTRL, RST | LNK_RST, 0, 100)?;
-    delay_ms(io, if port.family == Family::X540 { 100 } else { 50 });
+    delay_ms(io, if port.family.integrated_copper() { 100 } else { 50 });
     mask_interrupts(io)?;
-    let eec = wait(io, EEC, 1 << 9, 1 << 9, 1000)?;
+    let eec_reg = if port.family == Family::X553 { EEC_X553 } else { EEC };
+    let eec = wait(io, eec_reg, 1 << 9, 1 << 9, 1000)?;
     // AUTO_RD also sets for absent or invalid NVM; require EE_PRES as well.
     if eec & (1 << 8) == 0 { return Err(Error::MissingNvm); }
     // CFG_DONE0/1 (bit 18 + LAN_ID): this port's configuration load.
@@ -275,8 +296,9 @@ pub fn reset<Io: Registers>(io: &mut Io, port: Port) -> R<Identity, Io::Error> {
     wait(io, RDRXCTL, 1 << 3, 1 << 3, 1000)?;
     match port.family {
         Family::F82599 => f82599::after_reset(io)?,
-        Family::X540 => {}
+        Family::X540 | Family::X550 => {}
         Family::X552 => x552::after_reset(io, port)?,
+        Family::X553 => x553::after_reset(io, port)?,
     }
     // Unlike control/status registers, RAL can legitimately be all ones.
     let low = io.read(RAL0).map_err(Error::Io)?.to_le_bytes();
@@ -306,6 +328,7 @@ pub enum Setup {
     F82599(f82599::Setup),
     X540(x540::Setup),
     X552(x552::Setup),
+    X553(x553::Setup),
 }
 
 /// Link setup after `reset`, per family (spec 9).
@@ -315,6 +338,7 @@ pub fn setup_link<Io: Registers>(io: &mut Io, port: Port, veto: bool, prepared: 
         Prepared::F82599(p) => Setup::F82599(f82599::setup(io, port, veto, p)?),
         Prepared::X540 => Setup::X540(x540::setup(io, port, veto)?),
         Prepared::X552(p) => Setup::X552(x552::setup(io, port, veto, p)?),
+        Prepared::X553(p) => Setup::X553(x553::setup(io, port, veto, p)?),
     })
 }
 
@@ -327,14 +351,20 @@ pub enum Link {
 
 /// LINKS (spec 8.1): the current LINK_UP bit, not the latched history. A
 /// cable unplugged is a normal state, not a bring-up timeout. Bits 29:28
-/// are the speed; on the X552, `11` with NON_STD (bit 27) is 2.5G.
+/// are the speed. With NON_STD (bit 27): `11` is 2.5G from the X550 on, and
+/// `01` is 5G on the X550 (spec 12.3). On the X553, `00` is 10M; the shared
+/// code reports it only on the 1G copper devices, the only ones that can
+/// link at 10M (spec 12.10).
 pub fn link<Io: Registers>(io: &mut Io, family: Family) -> R<Link, Io::Error> {
     let value = read(io, LINKS)?;
     if value & LINK_UP == 0 { return Ok(Link::Down); }
+    let non_std = value & (1 << 27) != 0;
     let megabits = match (value >> 28) & 3 {
+        0 if family == Family::X553 => Some(10),
+        1 if family == Family::X550 && non_std => Some(5000),
         1 => Some(100),
         2 => Some(1000),
-        3 if family == Family::X552 && value & (1 << 27) != 0 => Some(2500),
+        3 if non_std && matches!(family, Family::X550 | Family::X552 | Family::X553) => Some(2500),
         3 => Some(10_000),
         _ => None,
     };
@@ -342,10 +372,10 @@ pub fn link<Io: Registers>(io: &mut Io, family: Family) -> R<Link, Io::Error> {
 }
 
 /// LINKS behind the crosstalk fix (spec 4.4, 8.1): when `crosstalk` is on,
-/// an empty cage (82599 SDP2, X552 SDP0 clear) is link down, and "up" is
-/// read again after 5 ms.
+/// an empty cage (82599 SDP2, X552/X553 SDP0 clear) is link down, and "up"
+/// is read again after 5 ms.
 pub fn cage_link<Io: Registers>(io: &mut Io, family: Family, crosstalk: bool) -> R<Link, Io::Error> {
-    let cage = if family == Family::X552 { 1 << 0 } else { 1 << 2 };
+    let cage = if matches!(family, Family::X552 | Family::X553) { 1 << 0 } else { 1 << 2 };
     if crosstalk && read(io, ESDP)? & cage == 0 { return Ok(Link::Down); }
     let state = link(io, family)?;
     if crosstalk && state != Link::Down {
@@ -364,12 +394,16 @@ pub fn link_registers<Io: Registers>(io: &mut Io) -> R<[u32; 4], Io::Error> {
 }
 
 /// The console warning for a path verified in simulation only (owner's
-/// decision on #15, #17): the X540 and X552 paths have run only against the
-/// simulated devices in test/hardware.rs; the 82599 path is verified on metal.
+/// decisions on #15 and #23, #17): the X540, X550, X552 and X553 paths have
+/// run only against the simulated devices in test/hardware.rs; the 82599
+/// path is verified on metal.
 pub fn simulation_only(family: Family) -> Option<&'static str> {
     match family {
         Family::F82599 => None,
-        Family::X540 | Family::X552 => Some("X540/X552 path: verified in simulation only"),
+        Family::X540 => Some("X540 path: verified in simulation only"),
+        Family::X550 => Some("X550 path: verified in simulation only"),
+        Family::X552 => Some("X552 path: verified in simulation only"),
+        Family::X553 => Some("X553 path: verified in simulation only"),
     }
 }
 
@@ -379,18 +413,19 @@ pub fn simulation_only(family: Family) -> Option<&'static str> {
 pub fn link_budget_ms(port: Port) -> usize {
     let copper = match port.family {
         Family::F82599 => f82599::media(port.device) == f82599::Media::Copper,
-        Family::X540 => true,
+        Family::X540 | Family::X550 => true,
         Family::X552 => port.device == 0x15ad,
+        Family::X553 => x553::copper(port.device),
     };
     if copper { 9000 } else { 3000 }
 }
 
-/// What `wait_link` saw: the MAC link, and on the X552 10G_T the copper side.
+/// What `wait_link` saw: the MAC link, and on the X552/X553 10G_T the copper side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Waited {
     pub link: Link,
     pub copper: Option<x552::Copper>,
-    /// X552 10G_T: times the internal link was re-forced to the copper speed.
+    /// X552/X553 10G_T: times the internal link was re-forced to the copper speed.
     pub reforced: u32,
 }
 
@@ -400,18 +435,22 @@ pub struct Waited {
 pub fn wait_link<Io: Registers>(io: &mut Io, port: Port, setup: Option<&Setup>, millis: usize)
     -> R<Waited, Io::Error> {
     let mut watch = match setup {
-        Some(Setup::X552(x552::Setup::Copper { phy, internal, .. })) => Some(x552::Watch::new(*phy, *internal)),
+        Some(Setup::X552(x552::Setup::Copper { phy, internal, .. }))
+        | Some(Setup::X553(x553::Setup::X557(x552::Setup::Copper { phy, internal, .. }))) => {
+            Some(x552::Watch::new(*phy, *internal))
+        }
         _ => None,
     };
     let crosstalk = matches!(setup, Some(Setup::F82599(f82599::Setup::Module { crosstalk: true, .. }))
-        | Some(Setup::X552(x552::Setup::Sfp { crosstalk: Some(true), .. })));
+        | Some(Setup::X552(x552::Setup::Sfp { crosstalk: Some(true), .. }))
+        | Some(Setup::X553(x553::Setup::Sfp { crosstalk: Some(true), .. })));
     let mut elapsed = 0;
     loop {
         let mut copper = None;
         let mut state = cage_link(io, port.family, crosstalk)?;
         if let Some(w) = watch.as_mut() {
             let c = w.poll(io, port)?;
-            // Spec 7.8.6: up only when LINKS and the X557 both say so.
+            // Spec 7.8.6, 12.12: up only when LINKS and the X557 both say so.
             if !matches!(c, x552::Copper::Up { .. }) { state = Link::Down; }
             copper = Some(c);
         }

@@ -1,7 +1,8 @@
 //! Clause 45 MDIO through MSCA/MSRWD (spec 2), under the port's PHY
-//! semaphore, taken and released per register (spec 2.2).
+//! semaphore, taken and released per register (spec 2.2); on the X553 also
+//! under the firmware's PHY token (spec 12.5).
 
-use super::{delay_ms, read, sync, write, Error, Port, Registers, R};
+use super::{delay_ms, read, sync, write, Error, Family, Port, Registers, R};
 
 const MSCA: u32 = 0x0425c;
 const MSRWD: u32 = 0x04260;
@@ -26,13 +27,18 @@ fn cycle<Io: Registers>(io: &mut Io, command: u32) -> R<(), Io::Error> {
     Err(Error::Timeout { register: MSCA, mask: COMMAND, expected: 0, last })
 }
 
+/// What an MDIO access holds: the port's PHY bit, plus the token on the X553.
+fn mask(port: Port) -> u32 {
+    sync::phy(port.lan) | if port.family == Family::X553 { sync::TOKEN } else { 0 }
+}
+
 fn address(phy: u8, dev: u8, reg: u16) -> u32 {
     reg as u32 | (dev as u32) << 16 | (phy as u32) << 21
 }
 
 /// `dev.reg` of the PHY at `phy`: address cycle, then read cycle.
 pub fn read_reg<Io: Registers>(io: &mut Io, port: Port, phy: u8, dev: u8, reg: u16) -> R<u16, Io::Error> {
-    sync::locked(io, port, sync::phy(port.lan), |io| {
+    sync::locked(io, port, mask(port), |io| {
         let a = address(phy, dev, reg);
         cycle(io, a)?;
         cycle(io, a | OP_READ)?;
@@ -41,7 +47,7 @@ pub fn read_reg<Io: Registers>(io: &mut Io, port: Port, phy: u8, dev: u8, reg: u
 }
 
 pub fn write_reg<Io: Registers>(io: &mut Io, port: Port, phy: u8, dev: u8, reg: u16, value: u16) -> R<(), Io::Error> {
-    sync::locked(io, port, sync::phy(port.lan), |io| {
+    sync::locked(io, port, mask(port), |io| {
         write(io, MSRWD, value as u32)?;
         let a = address(phy, dev, reg);
         cycle(io, a)?;
@@ -78,6 +84,7 @@ pub fn scan<Io: Registers>(io: &mut Io, port: Port) -> R<Option<(u8, u32)>, Io::
 pub fn name(id: u32) -> &'static str {
     match id {
         0x0154_0200 => "X540",
+        0x0154_0220 => "X550",
         0x0154_0240 | 0x0154_0250 => "X557",
         0x00a1_9410 => "TN1010",
         0x0141_0dd0 => "88E1500",
@@ -119,12 +126,18 @@ pub fn abilities<Io: Registers>(io: &mut Io, port: Port, phy: u8) -> R<Speeds, I
 
 fn bit(value: u16, mask: u16, on: bool) -> u16 { if on { value | mask } else { value & !mask } }
 
-/// Advertise `s` and restart AN unless vetoed (spec 6.5; X540 and X557):
-/// 7.0x0020 bit 12 (10G), 7.0xC400 bit 15 (1G), 7.0x0010 bit 7 cleared and
-/// bit 8 (100M), then 7.0x0000 bit 9. Returns whether AN was restarted.
-pub fn advertise<Io: Registers>(io: &mut Io, port: Port, phy: u8, s: Speeds, veto: bool) -> R<bool, Io::Error> {
+/// Advertise `s` and restart AN unless vetoed (spec 6.5; X540, X550 and
+/// X557): 7.0x0020 bit 12 (10G), 7.0xC400 bit 15 (1G), 7.0x0010 bit 7
+/// cleared and bit 8 (100M), then 7.0x0000 bit 9. `nbase`: the X550's 5G
+/// and 2.5G (7.0xC400 bits 11 and 10, spec 12.3); None leaves them as they
+/// are. Returns whether AN was restarted.
+pub fn advertise<Io: Registers>(io: &mut Io, port: Port, phy: u8, s: Speeds, nbase: Option<bool>,
+    veto: bool) -> R<bool, Io::Error> {
     modify(io, port, phy, AN, 0x0020, |v| bit(v, 1 << 12, s.g10))?;
-    modify(io, port, phy, AN, 0xc400, |v| bit(v, 1 << 15, s.g1))?;
+    modify(io, port, phy, AN, 0xc400, |v| {
+        let v = match nbase { Some(on) => bit(v, (1 << 11) | (1 << 10), on), None => v };
+        bit(v, 1 << 15, s.g1)
+    })?;
     modify(io, port, phy, AN, 0x0010, |v| bit(v & !(1 << 7), 1 << 8, s.m100))?;
     if veto { return Ok(false); }
     modify(io, port, phy, AN, 0x0000, |v| v | (1 << 9))?;

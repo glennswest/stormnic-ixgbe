@@ -19,8 +19,12 @@
 //!
 //! The X552 NVM is read through the firmware's host interface (`nvm_word`,
 //! spec 11.2), not EERD; the SFP device reads the crosstalk-fix word with it.
+//!
+//! The X553 (`x553`) shares the KR PHY access, the SFP multispeed loop and
+//! the X557 path; where its KR PHY differs (spec 12.7), the functions here
+//! check the family.
 
-use super::mdio::{self, Speeds, ONE};
+use super::mdio::{self, Speeds};
 use super::sfp::{self, Module};
 use super::{delay_ms, flush, i2c, read, sync, write, Error, Family, Link, Port, Registers,
     ESDP, HLREG0, LINKS, MMNGC, R};
@@ -39,20 +43,35 @@ const IOSF_RESP_STAT: u32 = 3 << 18;
 const IOSF_TARGET_KR_PHY: u32 = 0 << 28;
 
 // KR PHY (KRM) registers: port 0 at 0x4xxx, port 1 at 0x8xxx (spec 7.3).
-fn krm(lan: u8, port0: u32) -> u32 { if lan == 1 { port0 + 0x4000 } else { port0 } }
-const KRM_LINK_CTRL_1: u32 = 0x420c;
+pub(super) fn krm(lan: u8, port0: u32) -> u32 { if lan == 1 { port0 + 0x4000 } else { port0 } }
+pub(super) const KRM_LINK_CTRL_1: u32 = 0x420c;
 const KRM_DSP_TXFFE_STATE_4: u32 = 0x4634;
 const KRM_DSP_TXFFE_STATE_5: u32 = 0x4638;
 const KRM_RX_TRN_LINKUP_CTRL: u32 = 0x4b00;
 const KRM_TX_COEFF_CTRL_1: u32 = 0x5520;
 
-const LC1_FORCE_SPEED: u32 = 7 << 8;
-const LC1_FORCE_1G: u32 = 2 << 8;
+pub(super) const LC1_FORCE_SPEED: u32 = 7 << 8;
+pub(super) const LC1_FORCE_1G: u32 = 2 << 8;
 const LC1_FORCE_10G: u32 = 4 << 8;
+pub(super) const LC1_SGMII: u32 = 1 << 12;
+pub(super) const LC1_CLAUSE_37: u32 = 1 << 13;
 const LC1_CAP_KX: u32 = 1 << 16;
-const LC1_CAP_KR: u32 = 1 << 18;
-const LC1_AN_ENABLE: u32 = 1 << 29;
+pub(super) const LC1_CAP_KR: u32 = 1 << 18;
+pub(super) const LC1_AN_ENABLE: u32 = 1 << 29;
 const LC1_AN_RESTART: u32 = 1 << 31;
+
+// X553 only: PMD_FLX_MASK_ST20 (spec 12.7).
+pub(super) const KRM_FLX: u32 = 0x5054;
+pub(super) const FLX_SFI_SR: u32 = 1 << 20;
+pub(super) const FLX_SFI_MODE: u32 = 3 << 20;
+pub(super) const FLX_SGMII: u32 = 1 << 25;
+pub(super) const FLX_AN37: u32 = 1 << 26;
+pub(super) const FLX_AN: u32 = 1 << 27;
+pub(super) const FLX_SPEED: u32 = 7 << 28;
+pub(super) const FLX_SPEED_1G: u32 = 2 << 28;
+pub(super) const FLX_SPEED_10G: u32 = 3 << 28;
+pub(super) const FLX_SPEED_AN: u32 = 4 << 28;
+const FLX_FW_AN_RESTART: u32 = 1 << 31;
 const TXFFE_ADAPT: u32 = (1 << 6) | (1 << 15) | (1 << 16);
 const TRN_CONV_WO_PROTOCOL: u32 = 1 << 4;
 const TX_COEFF_OVERRIDE: u32 = (1 << 31) | (1 << 3) | (1 << 2) | (1 << 1);
@@ -115,7 +134,7 @@ fn kr_read<Io: Registers>(io: &mut Io, port: Port, address: u32) -> R<u32, Io::E
 }
 
 /// Write: CTRL, then DATA, which starts it (spec 10 item 6: keep this order).
-fn kr_write<Io: Registers>(io: &mut Io, port: Port, address: u32, value: u32) -> R<(), Io::Error> {
+pub(super) fn kr_write<Io: Registers>(io: &mut Io, port: Port, address: u32, value: u32) -> R<(), Io::Error> {
     sync::locked(io, port, KR_LOCK, |io| {
         iosf_idle(io)?;
         write(io, IOSF_CTRL, address | IOSF_TARGET_KR_PHY)?;
@@ -124,7 +143,7 @@ fn kr_write<Io: Registers>(io: &mut Io, port: Port, address: u32, value: u32) ->
     })
 }
 
-fn kr_modify<Io: Registers>(io: &mut Io, port: Port, port0: u32,
+pub(super) fn kr_modify<Io: Registers>(io: &mut Io, port: Port, port0: u32,
     f: impl FnOnce(u32) -> u32) -> R<u32, Io::Error> {
     let address = krm(port.lan, port0);
     let value = f(kr_read(io, port, address)?);
@@ -132,14 +151,22 @@ fn kr_modify<Io: Registers>(io: &mut Io, port: Port, port0: u32,
     Ok(value)
 }
 
-/// LINK_CTRL_1.AN_RESTART; also resets the port after forcing a speed.
-fn restart_an<Io: Registers>(io: &mut Io, port: Port) -> R<u32, Io::Error> {
-    kr_modify(io, port, KRM_LINK_CTRL_1, |v| v | LC1_AN_RESTART)
+/// LINK_CTRL_1.AN_RESTART; also resets the port after forcing a speed. On
+/// the X553, then PMD_FLX_MASK_ST20.FW_AN_RESTART, which tells the firmware
+/// (spec 12.7).
+pub(super) fn restart_an<Io: Registers>(io: &mut Io, port: Port) -> R<u32, Io::Error> {
+    let lc1 = kr_modify(io, port, KRM_LINK_CTRL_1, |v| v | LC1_AN_RESTART)?;
+    if port.family == Family::X553 {
+        kr_modify(io, port, KRM_FLX, |v| v | FLX_FW_AN_RESTART)?;
+    }
+    Ok(lc1)
 }
 
 /// KR auto-negotiation advertising KR (10G) and/or KX (1G), then restart
-/// (spec 7.4 steps 3–4). The caller checks the veto where it applies.
-fn kr_autoneg<Io: Registers>(io: &mut Io, port: Port, kr: bool, kx: bool) -> R<u32, Io::Error> {
+/// (spec 7.4 steps 3–4). On the X553 the lane is also set to KR AN in
+/// PMD_FLX_MASK_ST20 before the restart (spec 12.7). The caller checks the
+/// veto where it applies.
+pub(super) fn kr_autoneg<Io: Registers>(io: &mut Io, port: Port, kr: bool, kx: bool) -> R<u32, Io::Error> {
     let lc1 = kr_modify(io, port, KRM_LINK_CTRL_1, |mut v| {
         v |= LC1_AN_ENABLE;
         v &= !(LC1_CAP_KR | LC1_CAP_KX);
@@ -147,6 +174,9 @@ fn kr_autoneg<Io: Registers>(io: &mut Io, port: Port, kr: bool, kx: bool) -> R<u
         if kx { v |= LC1_CAP_KX; }
         v
     })?;
+    if port.family == Family::X553 {
+        kr_modify(io, port, KRM_FLX, |v| (v & !(FLX_SPEED | FLX_AN37 | FLX_SGMII)) | FLX_SPEED_AN | FLX_AN)?;
+    }
     restart_an(io, port)?;
     Ok(lc1)
 }
@@ -170,8 +200,9 @@ fn ixfi<Io: Registers>(io: &mut Io, port: Port, ten_gig: bool) -> R<u32, Io::Err
 // ---- SDPs: I2C mux and cage presence, spec 7.7.1 ---------------------------
 
 /// SDP0 an input (cage full) on both ports; on port 1, SDP1 a GPIO output
-/// driven low (the mux, which `sync` switches with the I2C bits).
-fn setup_mux_ctl<Io: Registers>(io: &mut Io, lan: u8) -> R<(), Io::Error> {
+/// driven low (the mux, which `sync` switches with the I2C bits; the X553
+/// runs this too but has no mux, spec 12.11).
+pub(super) fn setup_mux_ctl<Io: Registers>(io: &mut Io, lan: u8) -> R<(), Io::Error> {
     let mut esdp = read(io, ESDP)?;
     if lan == 1 {
         esdp &= !((1 << 17) | (1 << 1));
@@ -305,7 +336,7 @@ pub fn nvm_word<Io: Registers>(io: &mut Io, port: Port, word: u16) -> R<u16, Io:
 
 /// The crosstalk fix (spec 4.4, 11.4): NVM word 0x2C bit 7 clear. None when the
 /// host interface or its semaphore was unavailable; the fix is then off.
-fn crosstalk_fix<Io: Registers>(io: &mut Io, port: Port) -> R<Option<bool>, Io::Error> {
+pub(super) fn crosstalk_fix<Io: Registers>(io: &mut Io, port: Port) -> R<Option<bool>, Io::Error> {
     match nvm_word(io, port, 0x2c) {
         Ok(caps) => Ok(Some(caps & 0x80 == 0)),
         Err(Error::HostInterface { .. } | Error::Semaphore { .. }) => Ok(None),
@@ -346,12 +377,14 @@ pub fn prepare<Io: Registers>(io: &mut Io, port: Port, veto: bool) -> R<Prepared
     }
 }
 
-fn slow_mdio<Io: Registers>(io: &mut Io) -> R<(), Io::Error> {
+pub(super) fn slow_mdio<Io: Registers>(io: &mut Io) -> R<(), Io::Error> {
     let hlreg0 = read(io, HLREG0)?;
     write(io, HLREG0, hlreg0 & !MDCSPD)
 }
 
-fn prepare_copper<Io: Registers>(io: &mut Io, port: Port, veto: bool) -> R<Prepared, Io::Error> {
+/// Also the X553 10G_T (spec 12.12), whose MDIO accesses take the PHY token
+/// and whose internal link is always KR.
+pub(super) fn prepare_copper<Io: Registers>(io: &mut Io, port: Port, veto: bool) -> R<Prepared, Io::Error> {
     // Spec 2.4: the slow MDIO clock before the first access.
     slow_mdio(io)?;
     // Spec 2.5: only NW_MNG_IF_SEL's address when it is set, else a scan.
@@ -372,7 +405,8 @@ fn prepare_copper<Io: Registers>(io: &mut Io, port: Port, veto: bool) -> R<Prepa
     // Spec 2.6, X557 variant, unless vetoed. The LASI alarm enables of 7.8.3
     // are for interrupts; this driver polls, so they are not set.
     if !veto { mdio::reset(io, port, phy, true)?; }
-    let internal = if sel & INT_PHY_MODE != 0 { Internal::Kr } else { Internal::Ixfi };
+    // NW_MNG_IF_SEL.INT_PHY_MODE is an X552 field; the X553 is always KR.
+    let internal = if port.family == Family::X553 || sel & INT_PHY_MODE != 0 { Internal::Kr } else { Internal::Ixfi };
     Ok(Prepared::Copper { phy, id, sel, unstalled, reset: !veto, internal })
 }
 
@@ -451,8 +485,38 @@ fn sfp_speed<Io: Registers>(io: &mut Io, port: Port, module: Module, ten: bool) 
     Ok((link_ctrl, edc))
 }
 
-fn links_up<Io: Registers>(io: &mut Io, crosstalk: bool) -> R<bool, Io::Error> {
-    Ok(super::cage_link(io, Family::X552, crosstalk)? != Link::Down)
+fn links_up<Io: Registers>(io: &mut Io, port: Port, crosstalk: bool) -> R<bool, Io::Error> {
+    Ok(super::cage_link(io, port.family, crosstalk)? != Link::Down)
+}
+
+/// Link speeds for an SFP+ module on the X552/X553 (spec 7.7.5, 12.11) with
+/// `step` setting up one speed (`true` for 10G). 1G modules 1G only, others
+/// 10G plus 1G if multispeed. Returns the last step's result, the speed
+/// link came up at while trying (multispeed), and whether every soft rate
+/// select succeeded.
+pub(super) fn sfp_speeds<Io: Registers, T>(io: &mut Io, port: Port, module: Module, cage: bool,
+    mut step: impl FnMut(&mut Io, bool) -> R<T, Io::Error>) -> R<(T, Option<u32>, bool), Io::Error> {
+    if !module.multispeed {
+        return Ok((step(io, !module.one_gig())?, None, true));
+    }
+    // Spec 5.8 with soft rate select and no laser flap: 10G, then 1G, then
+    // 10G again where the port is left waiting. (A multispeed module is
+    // never a 1G-only type, so both speeds apply.)
+    let mut rate_ok = true;
+    let mut last = None;
+    for ten in [true, false, true] {
+        rate_ok &= sfp::soft_rate_select(io, port, ten)?;
+        delay_ms(io, 40);
+        last = Some(step(io, ten)?);
+        let polls = if ten { 10 } else { 1 };
+        for _ in 0..polls {
+            delay_ms(io, 100);
+            if links_up(io, port, cage)? {
+                return Ok((last.unwrap(), Some(if ten { 10_000 } else { 1000 }), rate_ok));
+            }
+        }
+    }
+    Ok((last.unwrap(), None, rate_ok))
 }
 
 fn sfp_link<Io: Registers>(io: &mut Io, port: Port, module: Module, cs4227_reset: bool) -> R<Setup, Io::Error> {
@@ -461,31 +525,8 @@ fn sfp_link<Io: Registers>(io: &mut Io, port: Port, module: Module, cs4227_reset
     };
     if !module.supported(Family::X552) { return Ok(setup); }
     let fix = crosstalk_fix(io, port)?;
-    let cage = fix == Some(true);
-    // Spec 7.7.5: 1G modules 1G only, others 10G plus 1G if multispeed.
-    let s = if module.one_gig() { ONE } else { Speeds { g10: true, g1: module.multispeed, m100: false } };
-    let mut last = (0, 0);
-    let mut speed = None;
-    let mut rate_ok = true;
-    if module.multispeed {
-        // Spec 5.8 with soft rate select and no laser flap: 10G, then 1G,
-        // then 10G again where the port is left waiting. (A multispeed
-        // module is never a 1G-only type, so both speeds apply.)
-        for ten in [true, false, true] {
-            rate_ok &= sfp::soft_rate_select(io, port, ten)?;
-            delay_ms(io, 40);
-            last = sfp_speed(io, port, module, ten)?;
-            let polls = if ten { 10 } else { 1 };
-            let mut up = false;
-            for _ in 0..polls {
-                delay_ms(io, 100);
-                if links_up(io, cage)? { up = true; break; }
-            }
-            if up { speed = Some(if ten { 10_000 } else { 1000 }); break; }
-        }
-    } else {
-        last = sfp_speed(io, port, module, s.g10)?;
-    }
+    let (last, speed, rate_ok) = sfp_speeds(io, port, module, fix == Some(true),
+        |io, ten| sfp_speed(io, port, module, ten))?;
     if let Setup::Sfp { link_ctrl, edc, speed: sp, rate_select, crosstalk, .. } = &mut setup {
         *link_ctrl = Some(last.0);
         *edc = Some(last.1);
@@ -510,11 +551,11 @@ fn copper_link<Io: Registers>(io: &mut Io, port: Port, veto: bool, phy: u8, id: 
             if read(io, LINKS)? & LINK_UP != 0 && mdio::an_link(io, port, phy)? { break; }
         }
     }
-    let restarted = mdio::advertise(io, port, phy, s, veto)?;
+    let restarted = mdio::advertise(io, port, phy, s, None, veto)?;
     Ok(Setup::Copper { phy, id, sel, unstalled, reset, internal, advertised: s, restarted })
 }
 
-/// The copper side, polled (spec 7.8.6).
+/// The copper side, polled (spec 7.8.6, 12.12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Copper {
     Down,

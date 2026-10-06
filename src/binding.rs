@@ -46,6 +46,7 @@ use crate::hardware::rings::{self, Dma, Filter, Rings};
 use crate::snp;
 use crate::hardware::sfp::{Kind, Module};
 use crate::hardware::x552::{self, Copper};
+use crate::hardware::x553;
 use crate::hardware::{self, Error, Link, Port, Prepared, Registers, Setup};
 use crate::ids::{self, Nic};
 use crate::console;
@@ -703,11 +704,20 @@ fn log_prepared(at: &impl core::fmt::Display, dev: u16, p: &Prepared) {
             "stormnic-ixgbe: {at} 8086:{dev:04x}: {}",
             if *cs4227_reset { "CS4227 reset" } else { "CS4227 already reset" }
         ),
-        Prepared::X552(x552::Prepared::Copper { phy, id, sel, unstalled, reset, .. }) => trace!(
+        Prepared::X552(x552::Prepared::Copper { phy, id, sel, unstalled, reset, .. })
+        | Prepared::X553(x553::Prepared::X557(x552::Prepared::Copper { phy, id, sel, unstalled, reset, .. })) => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: {} PHY {id:08x} at MDIO {phy} (NW_MNG_IF_SEL {sel:08x}){}, {}",
             mdio::name(*id),
             if *unstalled { ", power-up stall released" } else { "" },
             if *reset { "reset" } else { "not reset (veto)" }
+        ),
+        Prepared::X553(x553::Prepared::Firmware { id, speeds, reset, down }) => note!(*down,
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: firmware PHY {id:08x}, speed bits {speeds:03x}, {}",
+            match (reset, down) {
+                (false, _) => "not reset (veto)",
+                (true, false) => "reset and set up",
+                (true, true) => "reset; firmware reports it down (over-temperature)",
+            }
         ),
         _ => {}
     }
@@ -717,11 +727,70 @@ fn log_setup(at: &impl core::fmt::Display, dev: u16, setup: &Setup) {
     match setup {
         Setup::F82599(s) => log_82599(at, dev, s),
         Setup::X540(s) => trace!(
-            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {} PHY {:08x} at MDIO {}, powered on, advertising {}, {}",
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {} PHY {:08x} at MDIO {}, powered on, advertising {}{}, {}",
             mdio::name(s.id), s.id, s.phy, speeds(s.advertised),
+            if s.nbase { "+5G+2.5G" } else { "" },
             if s.restarted { "AN restarted" } else { "AN not restarted (veto)" }
         ),
         Setup::X552(x) => log_x552(at, dev, x),
+        Setup::X553(x) => log_x553(at, dev, x),
+    }
+}
+
+fn log_x553(at: &impl core::fmt::Display, dev: u16, setup: &x553::Setup) {
+    match *setup {
+        x553::Setup::Kr { link_ctrl } => trace!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: KR PHY auto-negotiating {} (LINK_CTRL_1 {link_ctrl:08x}), restarted",
+            if x553::advertises_kr(link_ctrl) { "KR+KX" } else { "KX" }
+        ),
+        x553::Setup::Kr2500 { sel } => trace!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: 2.5G backplane (NW_MNG_IF_SEL {sel:08x}); link left as it is"
+        ),
+        x553::Setup::Sgmii { link_ctrl, sgmii, flx } => trace!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: SGMII 1G (LINK_CTRL_1 {link_ctrl:08x}, SGMII_CTRL {sgmii:08x}, FLX_MASK_ST20 {flx:08x}), restarted"
+        ),
+        x553::Setup::ManageabilityVeto => trace!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware"
+        ),
+        x553::Setup::Sfp { module: ref m, sfi: Some(sfi), speed, rate_select, crosstalk } => note!(!rate_select || crosstalk.is_none(),
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}, {}{}{}{}",
+            module(m),
+            sfi_text(sfi),
+            match speed { Some(10_000) => ", multispeed: link at 10G", Some(_) => ", multispeed: link at 1G", None => "" },
+            if rate_select { "" } else { ", soft rate select failed" },
+            match crosstalk {
+                Some(true) => ", cage-presence check on",
+                Some(false) => "",
+                None => ", NVM word 0x2C unreadable (host interface), cage-presence check off",
+            }
+        ),
+        x553::Setup::Sfp { module: ref m, .. } => note!(m.present(),
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}{}",
+            module(m),
+            if m.present() { ", not supported; link not set up" } else { "" }
+        ),
+        x553::Setup::X557(ref x) => log_x552(at, dev, x),
+        x553::Setup::Firmware { internal: None, .. } => trace!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: firmware PHY left as it is (veto)"
+        ),
+        x553::Setup::Firmware { internal: Some(flx), speeds, overtemp, .. } => note!(overtemp,
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: internal SGMII AN (FLX_MASK_ST20 {flx:08x}), firmware PHY speed bits {speeds:03x}{}",
+            if overtemp { ", over-temperature: link forced down" } else { "" }
+        ),
+    }
+}
+
+fn sfi_text(sfi: x553::Sfi) -> String {
+    match sfi {
+        x553::Sfi::Native { flx } => format!(
+            "native SFI {} (FLX_MASK_ST20 {flx:08x})", if flx & (3 << 28) == 3 << 28 { "10G" } else { "1G" }
+        ),
+        x553::Sfi::Retimer { link_ctrl, sku, register, edc } => format!(
+            "KR PHY {} (LINK_CTRL_1 {link_ctrl:08x}), {} EDC {} at {register:04x}",
+            if x553::advertises_kr(link_ctrl) { "10G" } else { "1G" },
+            if sku == 0x0010 { "CS4223" } else { "CS4227" },
+            if edc == 2 { "CX1" } else { "SR" }
+        ),
     }
 }
 

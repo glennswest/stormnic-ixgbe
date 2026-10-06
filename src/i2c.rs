@@ -2,8 +2,8 @@
 //! port expander and the CS4227 retimer.
 //!
 //! Two layouts (spec 3.1): the 82599/X540 I2CCTL at 0x28 releases a line by
-//! writing its "out" bit as 1; the X552 I2CCTL at 0x15F5C also has
-//! active-low output enables and a bit-bang enable.
+//! writing its "out" bit as 1; the X552/X553 I2CCTL at 0x15F5C also has
+//! active-low output enables and a bit-bang enable (spec 12.2).
 //!
 //! Timing (spec 3.2), in µs: rise + fall + set-up 3, clock high 4, low 5,
 //! start set-up 5, start hold 4, stop set-up 4, bus free 5; SCL waits up to
@@ -15,7 +15,7 @@ use super::{delay_ms, read, sync, write, Error, Family, Port, Registers, ESDP, R
 struct Layout {
     reg: u32,
     scl_in: u32, scl_out: u32, sda_in: u32, sda_out: u32,
-    /// X552 only (0 on the 82599/X540).
+    /// X552/X553 only (0 on the 82599/X540).
     sda_oe_n: u32, scl_oe_n: u32, bb_en: u32,
 }
 
@@ -32,7 +32,7 @@ struct Bus<'a, Io> { io: &'a mut Io, l: Layout, ctl: u32 }
 
 impl<'a, Io: Registers> Bus<'a, Io> {
     fn new(io: &'a mut Io, family: Family) -> R<Self, Io::Error> {
-        let l = if family == Family::X552 { LX552 } else { L82599 };
+        let l = if x550em(family) { LX552 } else { L82599 };
         let ctl = io.read(l.reg).map_err(Error::Io)?;
         Ok(Bus { io, l, ctl })
     }
@@ -161,15 +161,20 @@ impl<'a, Io: Registers> Bus<'a, Io> {
     }
 }
 
+/// The X552 and X553 (the shared code's X550EM): the X550 I2CCTL layout,
+/// the shared-segment semaphore, fewer read attempts.
+fn x550em(family: Family) -> bool { matches!(family, Family::X552 | Family::X553) }
+
 /// The semaphore guarding the port's I2C bus (spec 3.4): the port's PHY bit
-/// on the 82599, the shared-segment mask (with the mux) on the X552.
+/// on the 82599, the shared-segment mask on the X552 (with the mux) and the
+/// X553 (spec 12.11).
 fn mask(port: Port) -> u32 {
-    if port.family == Family::X552 { sync::SHARED_I2C } else { sync::phy(port.lan) }
+    if x550em(port.family) { sync::SHARED_I2C } else { sync::phy(port.lan) }
 }
 
 /// Read attempts for a byte other than the probe of the identifier (spec
-/// 3.3): 11 on the 82599/X540, 4 on the X552.
-pub fn attempts(port: Port) -> usize { if port.family == Family::X552 { 4 } else { 11 } }
+/// 3.3): 11 on the 82599/X540, 4 on the X552/X553.
+pub fn attempts(port: Port) -> usize { if x550em(port.family) { 4 } else { 11 } }
 
 /// One transfer; on an I2C failure the bus is cleared.
 fn attempt<Io: Registers, T>(io: &mut Io, port: Port, device: u8,

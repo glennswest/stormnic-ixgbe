@@ -7,8 +7,9 @@ use hardware::f82599::{self, Laser, PhyReset};
 use hardware::mdio::Speeds;
 use hardware::sfp::Kind;
 use hardware::x552::{self, Copper, Internal};
+use hardware::x553;
 use hardware::{Error, Family, Link, Port, Prepared, Registers, Setup};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum Op { Read(u32), Write(u32, u32), Delay(usize) }
@@ -29,6 +30,22 @@ struct Fake {
     /// NVM words behind EERD.
     nvm: BTreeMap<u32, u16>,
     i2c: Slave,
+    fw: Fw,
+}
+
+/// The firmware behind the host interface (spec 12.4–12.6), beyond the
+/// shadow-RAM read: PHY token requests answered from `token_replies`
+/// (granted when empty), PHY activities answered from `replies` with
+/// `activity_status` (success when None), and both logged.
+#[derive(Default)]
+struct Fw {
+    token_replies: VecDeque<u8>,
+    tokens: Vec<u32>,
+    /// Tokens granted and not given back.
+    held: i32,
+    activity_status: Option<u8>,
+    replies: BTreeMap<u16, [u32; 4]>,
+    activities: Vec<(u16, [u32; 4])>,
 }
 const EERD: u32 = 0x10014;
 const IOSF_CTRL: u32 = 0x11144;
@@ -60,6 +77,7 @@ impl Fake {
             mdio: BTreeMap::new(), mdio_addr: (0, 0, 0), mdio_writes: vec![],
             nvm: BTreeMap::new(),
             i2c: Slave::default(),
+            fw: Fw::default(),
         }
     }
     fn writes(&self) -> usize { self.ops.iter().filter(|op| matches!(op, Op::Write(..))).count() }
@@ -138,11 +156,37 @@ impl Registers for Fake {
             // of the big-endian byte address in dword 1 answers from `nvm`
             // in dword 3, clears C and sets SV.
             HICR if value & 3 == 3 && self.stuck != Some(HICR) => {
-                assert_eq!(self.reg(FLEX_MNG), 0xff06_0031, "shadow RAM read command");
-                assert_eq!(self.reg(FLEX_MNG + 8), 0x200, "length 2, big-endian");
-                let word = self.reg(FLEX_MNG + 4).swap_bytes() / 2;
-                let data = *self.nvm.get(&word).unwrap_or(&0) as u32;
-                self.regs.insert(FLEX_MNG + 12, data);
+                let head = self.reg(FLEX_MNG);
+                match head & 0xff {
+                    0x31 => {
+                        assert_eq!(head, 0xff06_0031, "shadow RAM read command");
+                        assert_eq!(self.reg(FLEX_MNG + 8), 0x200, "length 2, big-endian");
+                        let word = self.reg(FLEX_MNG + 4).swap_bytes() / 2;
+                        let data = *self.nvm.get(&word).unwrap_or(&0) as u32;
+                        self.regs.insert(FLEX_MNG + 12, data);
+                    }
+                    0x0a => {
+                        assert_eq!(head, 0xff00_020a, "token request header");
+                        let request = self.reg(FLEX_MNG + 4);
+                        self.fw.tokens.push(request);
+                        let take = request >> 8 & 0xff == 0;
+                        let status = if take { self.fw.token_replies.pop_front().unwrap_or(1) } else { 1 };
+                        if take && status == 1 { self.fw.held += 1 }
+                        if !take { self.fw.held -= 1 }
+                        self.regs.insert(FLEX_MNG, head & !(0xff << 16) | (status as u32) << 16);
+                    }
+                    0x05 => {
+                        assert_eq!(head, 0xff00_1405, "PHY activity header");
+                        let activity = (self.reg(FLEX_MNG + 4) >> 16) as u16;
+                        let data = [0, 1, 2, 3].map(|i| self.reg(FLEX_MNG + 8 + 4 * i).swap_bytes());
+                        self.fw.activities.push((activity, data));
+                        let status = self.fw.activity_status.unwrap_or(1);
+                        let out = self.fw.replies.get(&activity).copied().unwrap_or([0; 4]);
+                        self.regs.insert(FLEX_MNG, 0xff00_1005 | (status as u32) << 16);
+                        for (i, v) in out.iter().enumerate() { self.regs.insert(FLEX_MNG + 4 + 4 * i as u32, v.swap_bytes()); }
+                    }
+                    c => panic!("unexpected host-interface command {c:#x}"),
+                }
                 self.regs.insert(HICR, (value & !2) | 4);
             }
             _ => {}
@@ -316,6 +360,26 @@ fn run(io: &mut Fake, family: Family, device: u16) -> (Prepared, Result<Setup, E
 fn released(io: &Fake) {
     assert_eq!(io.reg(SWFW_SYNC) & 0x1fff, 0, "SW_FW_SYNC software bits released");
     assert_eq!(io.reg(SWSM) & 3, 0, "SWSM.SMBI/SWESMBI released");
+}
+
+const SWSM_X553: u32 = 0x15f70;
+const SWFW_SYNC_X553: u32 = 0x15f78;
+
+/// The X553's own semaphore registers released, the others never used, and
+/// every PHY token given back (spec 12.2, 12.5).
+fn released_x553(io: &Fake) {
+    assert_eq!(io.reg(SWFW_SYNC_X553) & 0x1fff, 0, "X553 SW_FW_SYNC software bits released");
+    assert_eq!(io.reg(SWSM_X553) & 1, 0, "X553 SWSM.SMBI released");
+    assert!(!io.ops.iter().any(|op| matches!(op, Op::Write(SWFW_SYNC | SWSM, _))), "not the 82599/X540/X552 registers");
+    assert_eq!(io.fw.held, 0, "every PHY token given back");
+}
+
+/// An X553 port ready for reset: NVM done at the X553's EEC (0x15FF8).
+fn x553_ready(lan: u32) -> Fake {
+    let mut io = Fake::ready(lan);
+    io.regs.remove(&0x10010);
+    io.regs.insert(0x15ff8, 0x300);
+    io
 }
 
 // ---- Common: quiesce, reset, NVM, LINKS -------------------------------------
@@ -812,7 +876,7 @@ fn x540_powers_the_phy_on_advertises_and_restarts_unless_vetoed() {
         if veto { io.regs.insert(0x42d0, 1); }
         let (_, s) = run(&mut io, Family::X540, 0x1528);
         let all = Speeds { g10: true, g1: true, m100: true };
-        assert_eq!(s, Ok(Setup::X540(hardware::x540::Setup { phy: 1, id: 0x0154_0200, advertised: all, restarted: !veto })));
+        assert_eq!(s, Ok(Setup::X540(hardware::x540::Setup { phy: 1, id: 0x0154_0200, advertised: all, nbase: false, restarted: !veto })));
         assert_eq!(io.mdio[&(1, 0x1e, 0)], 0x0040, "low-power bit cleared");
         assert_eq!(io.mdio[&(1, 7, 0x20)] & (1 << 12), 1 << 12);
         assert_eq!(io.mdio[&(1, 7, 0xc400)] & (1 << 15), 1 << 15);
@@ -1134,14 +1198,311 @@ fn x552_sfp_reads_the_crosstalk_word_through_the_host_interface() {
 }
 
 #[test]
-fn x540_and_x552_ids_warn_simulation_only_and_82599_ids_do_not() {
-    let warning = Some("X540/X552 path: verified in simulation only");
+fn every_id_but_the_82599_warns_simulation_only() {
     for nic in ids::SUPPORTED {
-        let expected = if nic.family == Family::F82599 { None } else { warning };
+        let expected = match nic.family {
+            Family::F82599 => None,
+            Family::X540 => Some("X540 path: verified in simulation only"),
+            Family::X550 => Some("X550 path: verified in simulation only"),
+            Family::X552 => Some("X552 path: verified in simulation only"),
+            Family::X553 => Some("X553 path: verified in simulation only"),
+        };
         assert_eq!(hardware::simulation_only(nic.family), expected, "8086:{:04x} {}", nic.device, nic.name);
     }
-    for (device, family) in [(0x1557, Family::F82599), (0x1528, Family::X540), (0x15ad, Family::X552)] {
+    for (device, family) in [(0x1557, Family::F82599), (0x1528, Family::X540), (0x1563, Family::X550),
+        (0x15d1, Family::X550), (0x15ad, Family::X552), (0x15c2, Family::X553), (0x15e5, Family::X553)] {
         assert_eq!(ids::lookup(ids::INTEL, device).map(|n| n.family), Some(family), "8086:{device:04x}");
     }
+    // Spec 12.1: eleven new IDs; the X553 QSFP+ IDs and the VFs are not bound.
+    let x55x = ids::SUPPORTED.iter().filter(|n| matches!(n.family, Family::X550 | Family::X553)).count();
+    assert_eq!(x55x, 11);
+    for device in [0x15ca, 0x15cc, 0x1564, 0x1565, 0x15b4, 0x15c5] {
+        assert!(ids::lookup(ids::INTEL, device).is_none(), "8086:{device:04x} must not be bound");
+    }
     assert_eq!(hardware::simulation_only(Family::F82599), None);
+}
+
+// ---- X550 (spec 12.3) ----------------------------------------------------------
+
+#[test]
+fn x550_advertises_2g5_and_5g_after_an_x540_style_reset() {
+    let mut io = Fake::ready(0);
+    io.mdio.insert((0, 1, 2), 0x0154);
+    io.mdio.insert((0, 1, 3), 0x0221);
+    io.mdio.insert((0, 1, 4), 0x0011);
+    io.mdio.insert((0, 7, 0xc400), 0);
+    let (_, s) = run(&mut io, Family::X550, 0x1563);
+    let ten_one = Speeds { g10: true, g1: true, m100: false };
+    assert_eq!(s, Ok(Setup::X540(hardware::x540::Setup {
+        phy: 0, id: 0x0154_0220, advertised: ten_one, nbase: true, restarted: true })));
+    assert_eq!(io.mdio[&(0, 7, 0xc400)], 0x8c00, "1G, 5G and 2.5G advertised");
+    // The X540 reset: RST even with the link down, then 100 ms.
+    assert!(io.writes_to(0).iter().any(|v| v & (1 << 26) != 0));
+    assert!(!io.writes_to(0).iter().any(|v| v & (1 << 3) != 0), "never LNK_RST");
+    assert!(io.delays(100_000) >= 1);
+    released(&io);
+    // The X540 leaves 7.0xC400 bits 10 and 11 as they are.
+    let mut io = Fake::ready(0);
+    io.mdio.insert((0, 1, 2), 0x0154);
+    io.mdio.insert((0, 1, 3), 0x0200);
+    io.mdio.insert((0, 1, 4), 0x0011);
+    io.mdio.insert((0, 7, 0xc400), 0x0400);
+    let (_, s) = run(&mut io, Family::X540, 0x1528);
+    assert!(matches!(s, Ok(Setup::X540(hardware::x540::Setup { nbase: false, .. }))));
+    assert_eq!(io.mdio[&(0, 7, 0xc400)], 0x8400);
+}
+#[test]
+fn links_non_standard_speeds_per_family() {
+    let up = 1 << 30;
+    let non_std = 1 << 27;
+    for (family, links, megabits) in [
+        (Family::X550, up | (3 << 28) | non_std, Some(2500)),
+        (Family::X550, up | (1 << 28) | non_std, Some(5000)),
+        (Family::X540, up | (1 << 28) | non_std, Some(100)),
+        (Family::X540, up | (3 << 28) | non_std, Some(10_000)),
+        (Family::X553, up | (3 << 28) | non_std, Some(2500)),
+        (Family::X553, up | (1 << 28) | non_std, Some(100)),
+        (Family::X553, up, Some(10)),
+        (Family::X550, up, None),
+    ] {
+        let mut io = Fake::ready(0);
+        io.regs.insert(LINKS, links);
+        assert_eq!(hardware::link(&mut io, family), Ok(Link::Up { megabits }), "{family:?} LINKS {links:08x}");
+    }
+}
+
+// ---- X553 (spec 12) ------------------------------------------------------------
+
+#[test]
+fn x553_kr_sets_the_flx_lane_and_flags_the_restart_under_its_own_semaphore() {
+    let mut io = x553_ready(0);
+    let (prepared, setup) = run(&mut io, Family::X553, 0x15c2);
+    assert_eq!(prepared, Prepared::X553(x553::Prepared::Nothing));
+    let lc1 = LC1_AN_ENABLE | LC1_KR | LC1_KX;
+    assert_eq!(setup, Ok(Setup::X553(x553::Setup::Kr { link_ctrl: lc1 })));
+    assert_eq!(io.kr[&0x420c], lc1 | LC1_AN_RESTART);
+    assert_eq!(io.kr[&0x5054], (4 << 28) | (1 << 27) | (1 << 31), "KR AN lane, firmware told of the restart");
+    let order: Vec<u32> = io.kr_writes.iter().map(|w| w.0).collect();
+    assert_eq!(order, [0x420c, 0x5054, 0x420c, 0x5054]);
+    assert!(io.ops.contains(&Op::Read(0x15ff8)), "NVM done read at the X553's EEC");
+    assert!(io.writes_to(SWFW_SYNC_X553).contains(&0x6), "IOSF under PHY0 and PHY1");
+    released_x553(&io);
+    // 15c3 is 1G only.
+    let mut io = x553_ready(1);
+    let (_, setup) = run(&mut io, Family::X553, 0x15c3);
+    assert_eq!(setup, Ok(Setup::X553(x553::Setup::Kr { link_ctrl: LC1_AN_ENABLE | LC1_KX })));
+    assert_eq!(io.kr[&0x9054] >> 28, 0xc, "port 1's FLX register");
+    // A 2.5G backplane, or the veto: nothing written.
+    let mut io = x553_ready(0);
+    io.regs.insert(0x11178, 1 << 20);
+    let (_, setup) = run(&mut io, Family::X553, 0x15c2);
+    assert_eq!(setup, Ok(Setup::X553(x553::Setup::Kr2500 { sel: 1 << 20 })));
+    assert!(io.kr_writes.is_empty());
+    let mut io = x553_ready(0);
+    io.regs.insert(0x42d0, 1);
+    let (_, setup) = run(&mut io, Family::X553, 0x15c2);
+    assert_eq!(setup, Ok(Setup::X553(x553::Setup::ManageabilityVeto)));
+    assert!(io.kr_writes.is_empty());
+}
+#[test]
+fn x553_sgmii_forces_the_internal_phy_to_1g_sgmii() {
+    let mut io = x553_ready(1);
+    io.regs.insert(0x4240, 1 << 16);
+    io.kr.insert(0x820c, LC1_AN_ENABLE | (4 << 8));
+    io.kr.insert(0x9054, (1 << 27) | (4 << 28));
+    let (_, setup) = run(&mut io, Family::X553, 0x15c6);
+    let lc1 = (1 << 12) | (1 << 13) | (2 << 8);
+    let sgmii = (1 << 19) | (1 << 12);
+    let flx = (2 << 28) | (1 << 25) | (1 << 26);
+    assert_eq!(setup, Ok(Setup::X553(x553::Setup::Sgmii { link_ctrl: lc1, sgmii, flx })));
+    assert_eq!(io.kr[&0x820c], lc1 | LC1_AN_RESTART);
+    assert_eq!(io.kr[&0x82a0], sgmii);
+    assert_eq!(io.kr[&0x9054], flx | (1 << 31));
+    assert_eq!(io.reg(0x4240) & (1 << 16), 0, "slow MDIO clock");
+    released_x553(&io);
+    let mut io = x553_ready(0);
+    io.regs.insert(0x42d0, 1);
+    let (_, setup) = run(&mut io, Family::X553, 0x15c7);
+    assert_eq!(setup, Ok(Setup::X553(x553::Setup::ManageabilityVeto)));
+    assert!(io.kr_writes.is_empty());
+}
+#[test]
+fn x553_firmware_phy_is_identified_reset_and_set_up_through_activities() {
+    let firmware = |veto: bool| {
+        let mut io = x553_ready(0);
+        io.regs.insert(HICR, 1);
+        if veto { io.regs.insert(0x42d0, 1); }
+        // PHY ID 0x0141_0dd0, speeds 100M and 1G.
+        io.fw.replies.insert(7, [0x0141_0006, 0x0dd1, 0, 0]);
+        io
+    };
+    let mut io = firmware(false);
+    io.regs.insert(LINKS, 1 << 30);
+    let (prepared, setup) = run(&mut io, Family::X553, 0x15e4);
+    assert_eq!(prepared, Prepared::X553(x553::Prepared::Firmware { id: 0x0141_0dd0, speeds: 6, reset: true, down: false }));
+    let flx = (4 << 28) | (1 << 25) | (1 << 26);
+    assert_eq!(setup, Ok(Setup::X553(x553::Setup::Firmware { id: 0x0141_0dd0, speeds: 6, internal: Some(flx), overtemp: false })));
+    let activities: Vec<u16> = io.fw.activities.iter().map(|a| a.0).collect();
+    assert_eq!(activities, [7, 5, 1, 2, 2, 3], "info, reset, init, set up; set up again with SGMII; link info");
+    assert_eq!(io.fw.activities[3].1, [6 | (1 << 19) | (1 << 22), 0, 0, 0], "speeds, HP, AN; no pause, no EEE");
+    assert_ne!(io.reg(0x4240) & (1 << 16), 0, "fast MDIO clock");
+    let lc1 = (1 << 12) | (1 << 13);
+    assert_eq!(io.kr_writes.iter().filter(|w| w.0 == 0x420c).map(|w| w.1).collect::<Vec<_>>(), [lc1, lc1, lc1 | LC1_AN_RESTART]);
+    assert_eq!(io.kr[&0x42a0], 0);
+    assert_eq!(io.kr[&0x5054], flx | (1 << 31));
+    assert_eq!(hardware::link(&mut io, Family::X553), Ok(Link::Up { megabits: Some(10) }));
+    assert_eq!(hardware::link_budget_ms(port(Family::X553, 0x15e4, 0)), 9000);
+    released_x553(&io);
+    // Veto: identified only.
+    let mut io = firmware(true);
+    let (_, setup) = run(&mut io, Family::X553, 0x15e5);
+    assert!(matches!(setup, Ok(Setup::X553(x553::Setup::Firmware { internal: None, overtemp: false, .. }))));
+    assert_eq!(io.fw.activities.len(), 1);
+    assert!(io.kr_writes.is_empty());
+    // Over temperature: the link is forced down.
+    let mut io = firmware(false);
+    io.fw.replies.insert(3, [1 << 25, 0, 0, 0]);
+    let (_, setup) = run(&mut io, Family::X553, 0x15e4);
+    assert!(matches!(setup, Ok(Setup::X553(x553::Setup::Firmware { overtemp: true, .. }))));
+    assert_eq!(io.fw.activities.last(), Some(&(4, [1, 0, 0, 0])));
+    // Already down after the reset's set-up: not set up again.
+    let mut io = firmware(false);
+    io.fw.replies.insert(2, [1, 0, 0, 0]);
+    let (prepared, setup) = run(&mut io, Family::X553, 0x15e4);
+    assert!(matches!(prepared, Prepared::X553(x553::Prepared::Firmware { down: true, .. })));
+    assert!(matches!(setup, Ok(Setup::X553(x553::Setup::Firmware { internal: None, overtemp: true, .. }))));
+    assert_eq!(io.fw.activities.iter().map(|a| a.0).collect::<Vec<_>>(), [7, 5, 1, 2, 4]);
+    // A failing status is retried 50 times; no PHY ID is no PHY.
+    let mut io = firmware(false);
+    io.fw.activity_status = Some(2);
+    let lan = hardware::begin(&mut io).unwrap();
+    assert_eq!(hardware::prepare(&mut io, port(Family::X553, 0x15e4, lan), false),
+        Err(Error::Firmware { command: 5, status: 2 }));
+    assert_eq!(io.fw.activities.len(), 50);
+    released_x553(&io);
+    let mut io = firmware(false);
+    io.fw.replies.insert(7, [0; 4]);
+    let lan = hardware::begin(&mut io).unwrap();
+    assert_eq!(hardware::prepare(&mut io, port(Family::X553, 0x15e4, lan), false), Err(Error::NoPhy));
+}
+#[test]
+fn x553_10gbase_t_mdio_holds_the_phy_token_and_kr_follows_copper() {
+    let sel = (1 << 1) | (4 << 3);
+    let mut io = x553_ready(0);
+    io.regs.insert(HICR, 1);
+    io.regs.insert(0x11178, sel);
+    x557(&mut io, 4, true);
+    io.fw.token_replies = VecDeque::from([0x80, 0x80]);
+    let (prepared, setup) = run(&mut io, Family::X553, 0x15c8);
+    assert_eq!(prepared, Prepared::X553(x553::Prepared::X557(x552::Prepared::Copper {
+        phy: 4, id: 0x0154_0240, sel, unstalled: true, reset: true, internal: Internal::Kr })));
+    assert!(matches!(setup, Ok(Setup::X553(x553::Setup::X557(x552::Setup::Copper { restarted: true, .. })))), "{setup:?}");
+    assert!(io.kr_writes.is_empty(), "no iXFI: the X553's internal link is KR, set at copper link-up");
+    assert!(io.delays(5000) >= 2, "a busy token is asked for again 5 ms later");
+    assert!(io.fw.tokens.iter().all(|t| t & 0xff == 0), "port 0's token");
+    assert!(io.fw.tokens.len() > 10, "a token per MDIO register");
+    released_x553(&io);
+    // Copper up: LINKS and the X557 both, then KR AN with the FLX lane.
+    let setup = setup.unwrap();
+    let p = port(Family::X553, 0x15c8, 0);
+    io.mdio.insert((4, 7, 1), 1 << 2);
+    io.mdio.insert((4, 7, 0xc800), 7);
+    io.regs.insert(LINKS, UP_10G);
+    let w = hardware::wait_link(&mut io, p, Some(&setup), 0).unwrap();
+    assert_eq!((w.link, w.reforced), (Link::Up { megabits: Some(10_000) }, 1));
+    assert_eq!(io.kr[&0x420c], LC1_AN_ENABLE | LC1_KR | LC1_KX | LC1_AN_RESTART);
+    assert_eq!(io.kr[&0x5054], (4 << 28) | (1 << 27) | (1 << 31));
+    released_x553(&io);
+}
+#[test]
+fn x553_mdio_without_the_token_is_never_started() {
+    let refused = |status: Option<u8>, hicr: u32| {
+        let mut io = x553_ready(0);
+        io.regs.insert(HICR, hicr);
+        io.regs.insert(0x11178, (1 << 1) | (4 << 3));
+        x557(&mut io, 4, false);
+        if let Some(s) = status { io.fw.token_replies.push_back(s); }
+        let lan = hardware::begin(&mut io).unwrap();
+        let e = hardware::prepare(&mut io, port(Family::X553, 0x15c8, lan), false);
+        assert!(!io.ops.iter().any(|op| matches!(op, Op::Write(MSCA, _))), "no MDIO cycle");
+        released_x553(&io);
+        e
+    };
+    assert_eq!(refused(Some(2), 1), Err(Error::Firmware { command: 0x0a, status: 2 }));
+    assert_eq!(refused(None, 0), Err(Error::HostInterface { hicr: 0 }));
+    // Busy for the whole 5 s.
+    let mut io = x553_ready(0);
+    io.regs.insert(HICR, 1);
+    io.fw.token_replies = VecDeque::from(vec![0x80; 1000]);
+    let p = port(Family::X553, 0x15c8, 0);
+    assert_eq!(hardware::mdio::read_reg(&mut io, p, 4, 1, 2), Err(Error::Firmware { command: 0x0a, status: 0x80 }));
+    assert_eq!(io.fw.tokens.len(), 1000);
+    released_x553(&io);
+}
+#[test]
+fn x553_sfp_n_runs_native_sfi_without_a_mux() {
+    let mut io = x553_ready(1);
+    io.i2c = Slave::module(sfp(&[(3, 0x10)]));
+    let (prepared, setup) = run(&mut io, Family::X553, 0x15c4);
+    assert!(matches!(prepared, Prepared::X553(x553::Prepared::Sfp { module }) if module.kind == Kind::SrLr));
+    let Ok(Setup::X553(x553::Setup::Sfp { sfi, speed, rate_select, crosstalk, .. })) = setup else { panic!("{setup:?}") };
+    let flx = (1 << 20) | (3 << 28);
+    assert_eq!((sfi, speed, rate_select, crosstalk), (Some(x553::Sfi::Native { flx }), None, true, None));
+    assert_eq!(io.kr[&0x9054], flx | (1 << 31));
+    assert_eq!(io.kr[&0x820c], LC1_AN_RESTART, "port reset through AN restart");
+    assert!(!io.writes_to(ESDP).iter().any(|v| v & 2 != 0), "no I2C mux on the X553");
+    assert!(io.writes_to(SWFW_SYNC_X553).contains(&0x1806), "the shared-I2C mask");
+    released_x553(&io);
+    // Passive DA (multispeed): the SFI mode field cleared, link at 10G first.
+    let mut io = x553_ready(0);
+    io.kr.insert(0x5054, 2 << 20);
+    io.i2c = Slave::module(sfp(&[(8, 0x04)]));
+    io.regs.insert(LINKS, UP_10G);
+    let (_, setup) = run(&mut io, Family::X553, 0x15c4);
+    let Ok(Setup::X553(x553::Setup::Sfp { sfi, speed, .. })) = setup else { panic!("{setup:?}") };
+    assert_eq!((sfi, speed), (Some(x553::Sfi::Native { flx: 3 << 28 }), Some(10_000)));
+    assert_eq!((io.i2c.diag[0x6e], io.i2c.diag[0x76]), (8, 8), "soft rate select 10G");
+    // 1000BASE-T modules are refused, as on the X552.
+    let mut io = x553_ready(0);
+    io.i2c = Slave::module(sfp(&[(6, 0x08)]));
+    let (_, setup) = run(&mut io, Family::X553, 0x15c4);
+    assert!(matches!(setup, Ok(Setup::X553(x553::Setup::Sfp { sfi: None, .. }))));
+    assert!(io.kr_writes.is_empty());
+}
+#[test]
+fn x553_sfp_sets_the_retimer_edc_over_mdio() {
+    let retimer = |lan: u32, sel: u32, sku: u16| {
+        let mut io = x553_ready(lan);
+        io.regs.insert(HICR, 1);
+        io.nvm.insert(0x2c, 0x80);
+        io.regs.insert(0x11178, sel);
+        io.i2c = Slave::module(sfp(&[(3, 0x10)]));
+        io.mdio.insert((2, 0, 0x19f), sku);
+        io
+    };
+    let sel = (1 << 1) | (2 << 3);
+    let mut io = retimer(0, sel, 0x0014);
+    io.mdio.insert((2, 0, 0x12b0), 0x00f4);
+    let (_, setup) = run(&mut io, Family::X553, 0x15ce);
+    let Ok(Setup::X553(x553::Setup::Sfp { sfi, crosstalk, .. })) = setup else { panic!("{setup:?}") };
+    assert_eq!(sfi, Some(x553::Sfi::Retimer { link_ctrl: LC1_AN_ENABLE | LC1_KR, sku: 0x14, register: 0x12b0, edc: 4 }));
+    assert_eq!(crosstalk, Some(false), "NVM 0x2C read through the host interface");
+    assert_eq!(io.mdio[&(2, 0, 0x12b0)], 0x00f9, "EDC bits replaced by SR, bit 0 set");
+    assert_eq!(io.kr[&0x5054], (4 << 28) | (1 << 27) | (1 << 31));
+    assert_eq!(io.reg(0x4240) & (1 << 16), 0, "slow MDIO clock");
+    released_x553(&io);
+    // The quad-port CS4223 counts the MAC instance (NVM 0x45 bit 4).
+    let mut io = retimer(1, sel, 0x0010);
+    io.nvm.insert(0x45, 1 << 4);
+    io.mdio.insert((2, 0, 0x42b0), 0);
+    let (_, setup) = run(&mut io, Family::X553, 0x15ce);
+    let Ok(Setup::X553(x553::Setup::Sfp { sfi, .. })) = setup else { panic!("{setup:?}") };
+    assert_eq!(sfi, Some(x553::Sfi::Retimer { link_ctrl: LC1_AN_ENABLE | LC1_KR, sku: 0x10, register: 0x42b0, edc: 4 }));
+    assert_eq!(io.mdio[&(2, 0, 0x42b0)], 0x0009);
+    released_x553(&io);
+    // No MDIO address in NW_MNG_IF_SEL: no retimer to set.
+    let mut io = retimer(0, 2 << 3, 0x0014);
+    let (_, setup) = run(&mut io, Family::X553, 0x15ce);
+    assert_eq!(setup, Err(Error::NoPhy));
+    released_x553(&io);
 }

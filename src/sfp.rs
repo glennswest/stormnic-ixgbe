@@ -61,11 +61,12 @@ impl Module {
     /// Support (spec 4.2 steps 9–10, 7.7.4). The Intel-OUI rule is a support
     /// policy, not a hardware limit, and a boot driver may skip it (spec 4.2
     /// boot-driver note); this one does. `unknown` is always refused (no NVM
-    /// init sequence or EDC mode exists for it); the X552 also refuses 1G-T.
+    /// init sequence or EDC mode exists for it); the X552 and X553 also
+    /// refuse 1G-T (spec 7.7.4, 12.11).
     pub fn supported(self, family: Family) -> bool {
         match self.kind {
             Kind::NotPresent | Kind::Unknown => false,
-            Kind::Cu1g => family != Family::X552,
+            Kind::Cu1g => !matches!(family, Family::X552 | Family::X553),
             _ => true,
         }
     }
