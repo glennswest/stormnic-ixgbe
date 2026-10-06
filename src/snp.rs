@@ -18,7 +18,6 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
-use uefi::println;
 use uefi_raw::protocol::device_path::DevicePathProtocol;
 use uefi_raw::protocol::network::snp::{
     InterruptStatus, NetworkMode, NetworkState, NetworkStatistics, ReceiveFlags, SimpleNetworkProtocol,
@@ -168,7 +167,7 @@ impl Port {
 
     fn log_fail<E: core::fmt::Debug>(&self, call: &str, f: &Fail<E>) {
         if let Fail::Device(e) = f {
-            println!("stormnic-ixgbe: {}: SNP {call} failed: {e:x?}", at(self.location));
+            say!("stormnic-ixgbe: {}: SNP {call} failed: {e:x?}", at(self.location));
         }
     }
 }
@@ -197,7 +196,7 @@ unsafe extern "efiapi" fn initialize(this: *const SimpleNetworkProtocol, _extra_
     let mut io = c.port.io();
     match c.port.core.initialize(&mut io) {
         Ok(()) => {
-            println!(
+            trace!(
                 "stormnic-ixgbe: {}: SNP initialized, MAC {}, media {}",
                 at(c.port.location), mac_str(c.port.core.current), if c.port.core.media { "present" } else { "absent" }
             );
@@ -220,7 +219,7 @@ unsafe extern "efiapi" fn shutdown(this: *const SimpleNetworkProtocol) -> Status
     let c = unsafe { Call::enter(this) };
     let mut io = c.port.io();
     match c.port.core.shutdown(&mut io) {
-        Ok(()) => { println!("stormnic-ixgbe: {}: SNP shut down", at(c.port.location)); Status::SUCCESS }
+        Ok(()) => { trace!("stormnic-ixgbe: {}: SNP shut down", at(c.port.location)); Status::SUCCESS }
         Err(f) => { c.port.log_fail("Shutdown", &f); status(&f) }
     }
 }
@@ -241,7 +240,7 @@ unsafe extern "efiapi" fn receive_filters(this: *const SimpleNetworkProtocol, en
     match c.port.core.receive_filters(&mut io, enable.bits(), disable.bits(), reset_mcast, &addrs[..n]) {
         Ok(()) => {
             if c.port.core.setting != before || n > 0 {
-                println!(
+                trace!(
                     "stormnic-ixgbe: {}: SNP receive filters {:#04x}, {} multicast address(es)",
                     at(c.port.location), c.port.core.setting, c.port.core.mcast_count
                 );
@@ -260,7 +259,7 @@ unsafe extern "efiapi" fn station_address(this: *const SimpleNetworkProtocol, re
     let mut io = c.port.io();
     match c.port.core.station_address(&mut io, reset.0 != 0, new) {
         Ok(()) => {
-            println!("stormnic-ixgbe: {}: SNP station address {}", at(c.port.location), mac_str(c.port.core.current));
+            trace!("stormnic-ixgbe: {}: SNP station address {}", at(c.port.location), mac_str(c.port.core.current));
             Status::SUCCESS
         }
         Err(f) => { c.port.log_fail("StationAddress", &f); status(&f) }

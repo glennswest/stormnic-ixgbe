@@ -27,6 +27,8 @@
 //! boot names the device ID the machine really has. Nothing else is: the
 //! firmware calls Supported for every handle on every ConnectController.
 
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::time::Duration;
@@ -34,7 +36,7 @@ use alloc::boxed::Box;
 use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol};
 use uefi::mem::memory_map::MemoryType;
 use uefi::proto::loaded_image::LoadedImage;
-use uefi::{println, Handle, Result, Status};
+use uefi::{Handle, Result, Status};
 use uefi_raw::protocol::device_path::DevicePathProtocol;
 use uefi_raw::protocol::driver::DriverBindingProtocol;
 
@@ -46,6 +48,7 @@ use crate::hardware::sfp::{Kind, Module};
 use crate::hardware::x552::{self, Copper};
 use crate::hardware::{self, Error, Link, Port, Prepared, Registers, Setup};
 use crate::ids::{self, Nic};
+use crate::console;
 use crate::decode::{self, Enabled};
 use crate::pci_io::{Location, PciIo};
 
@@ -107,10 +110,10 @@ impl DmaRegion {
         // holds the pointer after this.
         unsafe {
             if let Err(e) = pci.unmap(self.mapping) {
-                println!("stormnic-ixgbe: could not unmap the DMA region: {:?}", e.status());
+                say!("stormnic-ixgbe: could not unmap the DMA region: {:?}", e.status());
             }
             if let Err(e) = pci.free_buffer(rings::DMA_PAGES, self.host) {
-                println!("stormnic-ixgbe: could not free the DMA region: {:?}", e.status());
+                say!("stormnic-ixgbe: could not free the DMA region: {:?}", e.status());
             }
         }
     }
@@ -182,7 +185,7 @@ impl IxgbeDriver {
         match ids::lookup(id.vendor, id.device) {
             Some(nic) => Ok((nic, location)),
             None => {
-                println!(
+                trace!(
                     "stormnic-ixgbe: {} 8086:{:04x}: Intel network function, not in the 82599/X540/X552 list; not binding",
                     at(location),
                     id.device
@@ -201,7 +204,7 @@ impl IxgbeDriver {
         let (nic, location) = self.ours(agent, controller)?;
         match open(agent, controller, OpenProtocolAttributes::ByDriver) {
             Ok(_pci) => {
-                println!(
+                trace!(
                     "stormnic-ixgbe: {} 8086:{:04x} {}: Supported",
                     at(location),
                     nic.device,
@@ -210,7 +213,7 @@ impl IxgbeDriver {
                 Ok(())
             }
             Err(e) => {
-                println!(
+                say!(
                     "stormnic-ixgbe: {} 8086:{:04x} {}: already driven by another driver ({:?}); leaving it",
                     at(location),
                     nic.device,
@@ -223,11 +226,12 @@ impl IxgbeDriver {
     }
 
     fn start(&mut self, agent: Handle, controller: Handle) -> Result {
+        console::begin();
         let (nic, location) = self.ours(agent, controller)?;
         let pci = match open(agent, controller, OpenProtocolAttributes::ByDriver) {
             Ok(pci) => pci,
             Err(e) => {
-                println!(
+                fail!(
                     "stormnic-ixgbe: {} 8086:{:04x}: Start could not open PciIo BY_DRIVER: {:?}",
                     at(location),
                     nic.device,
@@ -238,11 +242,11 @@ impl IxgbeDriver {
         };
         let attributes = match decode::enable(&*pci) {
             Ok(e) => {
-                println!("stormnic-ixgbe: {} 8086:{:04x}: {}", at(location), nic.device, Decode(&e));
+                trace!("stormnic-ixgbe: {} 8086:{:04x}: {}", at(location), nic.device, Decode(&e));
                 e
             }
             Err(decode::Error::Config(status)) => {
-                println!(
+                fail!(
                     "stormnic-ixgbe: {} 8086:{:04x}: Start could not enable memory decode and bus mastering: \
                      command register access failed: {:?}",
                     at(location),
@@ -252,7 +256,7 @@ impl IxgbeDriver {
                 return Err(Status::UNSUPPORTED.into());
             }
             Err(decode::Error::NotSet(command, e)) => {
-                println!(
+                fail!(
                     "stormnic-ixgbe: {} 8086:{:04x}: Start could not enable memory decode and bus mastering: \
                      command {command:#06x} after {}",
                     at(location),
@@ -262,10 +266,10 @@ impl IxgbeDriver {
                 return Err(Status::UNSUPPORTED.into());
             }
         };
-        let (mac, link) = match bring_up(&pci, nic, location) {
+        let (mac, link, state) = match bring_up(&pci, nic, location) {
             Ok(r) => r,
             Err(e) => {
-                println!(
+                fail!(
                     "stormnic-ixgbe: {} 8086:{:04x} {}: bring-up failed: {:x?}; releasing",
                     at(location),
                     nic.device,
@@ -287,7 +291,7 @@ impl IxgbeDriver {
         let port = match snp::create(agent.as_ptr(), controller.as_ptr(), &pci, rings, nic.family, mac, media, location) {
             Ok(p) => p,
             Err((status, in_use)) => {
-                println!(
+                fail!(
                     "stormnic-ixgbe: {} 8086:{:04x}: SNP not installed: {:?}; releasing",
                     at(location),
                     nic.device,
@@ -303,21 +307,24 @@ impl IxgbeDriver {
             }
         };
         self.bound.push(Bound { controller, location, decode: attributes, dma, port, pci });
-        println!(
-            "stormnic-ixgbe: {} 8086:{:04x} {}: Start: bound, SNP on a child handle, MAC {}, media {}",
+        // The one default line per NIC (#22).
+        say!(
+            "stormnic-ixgbe {}: {} 8086:{:04x} {}: MAC {}, {}, SNP installed",
+            env!("CARGO_PKG_VERSION"),
             at(location),
             nic.device,
             nic.name,
             mac_str(mac),
-            if media { "present" } else { "absent" }
+            state
         );
+        console::begin();
         Ok(())
     }
 
     /// With `children`, remove the SNP child; without, release the NIC.
     fn stop(&mut self, agent: Handle, controller: Handle, children: &[uefi_raw::Handle]) -> Result {
         let Some(i) = self.bound.iter().position(|b| b.controller == controller) else {
-            println!("stormnic-ixgbe: Stop for a controller this driver never started");
+            say!("stormnic-ixgbe: Stop for a controller this driver never started");
             return Err(Status::DEVICE_ERROR.into());
         };
         let (port, location) = (self.bound[i].port, self.bound[i].location);
@@ -327,10 +334,10 @@ impl IxgbeDriver {
             if child.is_some_and(|c| children.is_empty() || children.contains(&c)) {
                 // SAFETY: as above.
                 if let Err(s) = unsafe { snp::remove_child(agent.as_ptr(), controller.as_ptr(), port) } {
-                    println!("stormnic-ixgbe: {}: Stop: SNP child still in use ({s:?}); kept", at(location));
+                    say!("stormnic-ixgbe: {}: Stop: SNP child still in use ({s:?}); kept", at(location));
                     return Err(Status::DEVICE_ERROR.into());
                 }
-                println!("stormnic-ixgbe: {}: Stop: SNP child removed", at(location));
+                trace!("stormnic-ixgbe: {}: Stop: SNP child removed", at(location));
             }
             if !children.is_empty() {
                 return Ok(());
@@ -343,7 +350,7 @@ impl IxgbeDriver {
             Err(e) => keep_dma(&b.pci, b.location, &e),
         }
         restore(&b.pci, &b.decode);
-        println!("stormnic-ixgbe: {}: Stop: released", at(b.location));
+        trace!("stormnic-ixgbe: {}: Stop: released", at(b.location));
         Ok(())
     }
 }
@@ -473,7 +480,7 @@ impl core::fmt::Display for Decode<'_> {
 /// level instead; the pages stay allocated until reboot.
 fn keep_dma(pci: &PciIo, location: Option<Location>, e: &Error<Status>) {
     let off = decode::stop_bus_master(pci);
-    println!(
+    fail!(
         "stormnic-ixgbe: {}: could not stop DMA: {e:x?}; bus mastering {}, DMA region kept allocated",
         at(location),
         if off.is_ok() { "disabled" } else { "could not be disabled" }
@@ -489,11 +496,11 @@ fn dma_up(pci: &PciIo, nic: &Nic, location: Option<Location>, mac: [u8; 6], link
     let region = match DmaRegion::new(pci) {
         Ok(r) => r,
         Err(e) => {
-            println!("stormnic-ixgbe: {at} 8086:{dev:04x}: DMA region not mapped: {:?}; releasing", e.status());
+            fail!("stormnic-ixgbe: {at} 8086:{dev:04x}: DMA region not mapped: {:?}; releasing", e.status());
             return Err(());
         }
     };
-    println!(
+    trace!(
         "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA: {} pages at device {:#x}, RX {} x {} B, TX {} x {} B, legacy descriptors",
         rings::DMA_PAGES, region.device, rings::RX_DESCS, rings::BUF_SIZE, rings::TX_DESCS, rings::BUF_SIZE
     );
@@ -508,12 +515,12 @@ fn dma_up(pci: &PciIo, nic: &Nic, location: Option<Location>, mac: [u8; 6], link
     });
     match &checked {
         Ok(Some(c)) => log_check(&at, dev, c),
-        Ok(None) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: rings started; DMA check skipped: link down"),
-        Err(e) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: rings failed: {e:x?}"),
+        Ok(None) => trace!("stormnic-ixgbe: {at} 8086:{dev:04x}: rings started; DMA check skipped: link down"),
+        Err(e) => fail!("stormnic-ixgbe: {at} 8086:{dev:04x}: rings failed: {e:x?}"),
     }
     match rings.stop(&mut io) {
         Ok(left) if checked.is_ok() => {
-            println!(
+            note!(left > 0, 
                 "stormnic-ixgbe: {at} 8086:{dev:04x}: rings stopped{}",
                 if left > 0 { " (a frame was never sent)" } else { "" }
             );
@@ -521,7 +528,7 @@ fn dma_up(pci: &PciIo, nic: &Nic, location: Option<Location>, mac: [u8; 6], link
         }
         Ok(_) => {
             region.release(pci);
-            println!("stormnic-ixgbe: {at} 8086:{dev:04x}: DMA region released; releasing");
+            say!("stormnic-ixgbe: {at} 8086:{dev:04x}: DMA region released; releasing");
             Err(())
         }
         Err(e) => {
@@ -546,17 +553,17 @@ fn mac_str(m: [u8; 6]) -> impl core::fmt::Display {
 }
 
 fn log_check(at: &impl core::fmt::Display, dev: u16, c: &rings::Checked) {
-    println!(
+    note!(!c.sent, 
         "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: broadcast frame {} (GPTC {})",
         if c.sent { "sent, 60 bytes" } else { "not sent within 100 ms" },
         c.gptc
     );
     match c.first {
-        Some(f) => println!(
+        Some(f) => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: received {} frame(s) after {} ms (GPRC {}), first {} bytes from {} to {} type {:04x}",
             c.received, c.waited_ms, c.gprc, f.len, mac_str(f.source), mac_str(f.destination), f.ethertype
         ),
-        None => println!(
+        None => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: received nothing in {} ms (GPRC {})",
             c.waited_ms, c.gprc
         ),
@@ -565,7 +572,7 @@ fn log_check(at: &impl core::fmt::Display, dev: u16, c: &rings::Checked) {
 
 fn restore(pci: &PciIo, e: &Enabled<Status>) {
     if let Err(s) = decode::release(pci, e) {
-        println!("stormnic-ixgbe: could not undo the PCI decode and bus-master changes: {s:?}");
+        say!("stormnic-ixgbe: could not undo the PCI decode and bus-master changes: {s:?}");
     }
 }
 
@@ -576,32 +583,32 @@ fn fatal(e: &Error<Status>) -> bool { matches!(e, Error::Io(_) | Error::Removed)
 
 /// Quiesce, PHY/module steps, MAC reset, NVM MAC, link setup and link wait,
 /// each step logged.
-fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result::Result<([u8; 6], Link), Error<Status>> {
+fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result::Result<([u8; 6], Link, String), Error<Status>> {
     let mut io = Bar0(pci);
     let (at, dev) = (at(location), nic.device);
     let lan = hardware::begin(&mut io)?;
     let port = Port { family: nic.family, device: dev, lan };
     let veto = hardware::veto(&mut io)?;
     if veto {
-        println!("stormnic-ixgbe: {at} 8086:{dev:04x}: manageability veto (MMNGC.MNG_VETO): no PHY reset, AN restart or link-mode write");
+        say!("stormnic-ixgbe: {at} 8086:{dev:04x}: manageability veto (MMNGC.MNG_VETO): no PHY reset, AN restart or link-mode write");
     }
     let prepared = match hardware::prepare(&mut io, port, veto) {
         Ok(p) => { log_prepared(&at, dev, &p); Some(p) }
         Err(e) if fatal(&e) => return Err(e),
         Err(e) => {
-            println!("stormnic-ixgbe: {at} 8086:{dev:04x}: PHY/module check failed: {e:x?}; link left to hardware, reporting LINKS only");
+            fail!("stormnic-ixgbe: {at} 8086:{dev:04x}: PHY/module check failed: {e:x?}; link left to hardware, reporting LINKS only");
             None
         }
     };
     let id = hardware::reset(&mut io, port)?;
     let m = id.mac;
-    println!(
+    trace!(
         "stormnic-ixgbe: {at} 8086:{dev:04x}: reset ({}), LAN {}, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         if id.link_reset { "LNK_RST, link was down" } else { "RST" },
         id.lan, m[0], m[1], m[2], m[3], m[4], m[5]
     );
     if let Some(last) = id.cfg_pending {
-        println!(
+        trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: EEMNGCTL CFG_DONE{} not set after 1 s (EEMNGCTL {last:#010x}); NVM auto-read done, continuing",
             id.lan
         );
@@ -610,7 +617,7 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
         Some(Ok(s)) => { log_setup(&at, dev, &s); Some(s) }
         Some(Err(e)) if fatal(&e) => return Err(e),
         Some(Err(e)) => {
-            println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link setup failed: {e:x?}; reporting LINKS only");
+            fail!("stormnic-ixgbe: {at} 8086:{dev:04x}: link setup failed: {e:x?}; reporting LINKS only");
             None
         }
         None => None,
@@ -618,26 +625,26 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
     let budget = hardware::link_budget_ms(port);
     let w = hardware::wait_link(&mut io, port, setup.as_ref(), budget)?;
     match w.copper {
-        Some(Copper::Up { megabits }) => println!(
+        Some(Copper::Up { megabits }) => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: copper link up {megabits} Mb/s, internal link re-forced {} time(s)", w.reforced
         ),
-        Some(Copper::Invalid { status }) => println!(
+        Some(Copper::Invalid { status }) => say!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: copper link up at a speed the internal link cannot carry (AN vendor status {status:04x})"
         ),
-        Some(Copper::Down) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: copper link down"),
+        Some(Copper::Down) => trace!("stormnic-ixgbe: {at} 8086:{dev:04x}: copper link down"),
         None => {}
     }
-    match w.link {
-        Link::Up { megabits: Some(mb) } => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link up {mb} Mb/s"),
-        Link::Up { megabits: None } => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link up, speed encoding reserved"),
+    // The summary line carries this (#22); verbose prints it here as well.
+    let state = match w.link {
+        Link::Up { megabits: Some(mb) } => format!("link up {mb} Mb/s"),
+        Link::Up { megabits: None } => String::from("link up, speed encoding reserved"),
         Link::Down => {
             let [links, autoc, autoc2, esdp] = hardware::link_registers(&mut io)?;
-            println!(
-                "stormnic-ixgbe: {at} 8086:{dev:04x}: link down after {budget} ms (LINKS {links:08x}, AUTOC {autoc:08x}, AUTOC2 {autoc2:08x}, ESDP {esdp:08x})"
-            );
+            format!("link down after {budget} ms (LINKS {links:08x}, AUTOC {autoc:08x}, AUTOC2 {autoc2:08x}, ESDP {esdp:08x})")
         }
-    }
-    Ok((id.mac, w.link))
+    };
+    trace!("stormnic-ixgbe: {at} 8086:{dev:04x}: {state}");
+    Ok((id.mac, w.link, state))
 }
 
 fn speeds(s: Speeds) -> &'static str {
@@ -679,7 +686,7 @@ fn module(m: &Module) -> impl core::fmt::Display + '_ {
 
 fn log_prepared(at: &impl core::fmt::Display, dev: u16, p: &Prepared) {
     match p {
-        Prepared::F82599(f82599::Prepared::Copper { phy, id, reset }) => println!(
+        Prepared::F82599(f82599::Prepared::Copper { phy, id, reset }) => note!(*reset == PhyReset::OverTemperature, 
             "stormnic-ixgbe: {at} 8086:{dev:04x}: {} PHY {id:08x} at MDIO {phy}, {}",
             mdio::name(*id),
             match reset {
@@ -688,11 +695,11 @@ fn log_prepared(at: &impl core::fmt::Display, dev: u16, p: &Prepared) {
                 PhyReset::OverTemperature => "not reset (over-temperature alarm)",
             }
         ),
-        Prepared::X552(x552::Prepared::Sfp { cs4227_reset, .. }) => println!(
+        Prepared::X552(x552::Prepared::Sfp { cs4227_reset, .. }) => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: {}",
             if *cs4227_reset { "CS4227 reset" } else { "CS4227 already reset" }
         ),
-        Prepared::X552(x552::Prepared::Copper { phy, id, sel, unstalled, reset, .. }) => println!(
+        Prepared::X552(x552::Prepared::Copper { phy, id, sel, unstalled, reset, .. }) => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: {} PHY {id:08x} at MDIO {phy} (NW_MNG_IF_SEL {sel:08x}){}, {}",
             mdio::name(*id),
             if *unstalled { ", power-up stall released" } else { "" },
@@ -705,7 +712,7 @@ fn log_prepared(at: &impl core::fmt::Display, dev: u16, p: &Prepared) {
 fn log_setup(at: &impl core::fmt::Display, dev: u16, setup: &Setup) {
     match setup {
         Setup::F82599(s) => log_82599(at, dev, s),
-        Setup::X540(s) => println!(
+        Setup::X540(s) => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {} PHY {:08x} at MDIO {}, powered on, advertising {}, {}",
             mdio::name(s.id), s.id, s.phy, speeds(s.advertised),
             if s.restarted { "AN restarted" } else { "AN not restarted (veto)" }
@@ -716,19 +723,19 @@ fn log_setup(at: &impl core::fmt::Display, dev: u16, setup: &Setup) {
 
 fn log_82599(at: &impl core::fmt::Display, dev: u16, setup: &f82599::Setup) {
     match *setup {
-        f82599::Setup::Backplane { autoc, autoc2, written, an_complete } => println!(
+        f82599::Setup::Backplane { autoc, autoc2, written, an_complete } => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: NVM mode {} (AUTOC {autoc:08x} AUTOC2 {autoc2:08x}), {}{}",
             hardware::link_mode(autoc, autoc2),
             if written { "advertisement rewritten" } else { "already as the NVM set it" },
             match an_complete { Some(true) => ", AN complete", Some(false) => ", AN not complete after 4.5 s", None => "" }
         ),
-        f82599::Setup::Module { module: ref m, autoc, autoc2, sequence: None, .. } => println!(
+        f82599::Setup::Module { module: ref m, autoc, autoc2, sequence: None, .. } => note!(m.present(), 
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}{} (AUTOC {autoc:08x} AUTOC2 {autoc2:08x})",
             module(m),
             if m.present() { ", not supported; link not set up" } else { "" }
         ),
         f82599::Setup::Module { module: ref m, nvm_autoc, autoc, autoc2, sequence: Some(words), laser, speed, fw, crosstalk, rate_select } => {
-            println!(
+            note!(!rate_select, 
                 "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}, NVM init sequence {words} words, {} (NVM AUTOC {nvm_autoc:08x}, now AUTOC {autoc:08x} AUTOC2 {autoc2:08x}), laser {}{}{}",
                 module(m),
                 hardware::link_mode(autoc, autoc2),
@@ -741,16 +748,16 @@ fn log_82599(at: &impl core::fmt::Display, dev: u16, setup: &f82599::Setup) {
                 if crosstalk { ", cage-presence check on" } else { "" },
                 if rate_select { "" } else { ", soft rate select failed" }
             );
-            if let Some(v) = fw { println!("stormnic-ixgbe: {at} 8086:{dev:04x}: SFI firmware patch version {v:#x}{}", if v > 5 { "" } else { " (expected > 5)" }); }
+            if let Some(v) = fw { note!(v <= 5, "stormnic-ixgbe: {at} 8086:{dev:04x}: SFI firmware patch version {v:#x}{}", if v > 5 { "" } else { " (expected > 5)" }); }
             match speed {
-                Some(mb) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: multispeed: link at {mb} Mb/s"),
-                None if m.multispeed || f82599::media(dev) == f82599::Media::FiberFixed => println!(
+                Some(mb) => trace!("stormnic-ixgbe: {at} 8086:{dev:04x}: multispeed: link at {mb} Mb/s"),
+                None if m.multispeed || f82599::media(dev) == f82599::Media::FiberFixed => trace!(
                     "stormnic-ixgbe: {at} 8086:{dev:04x}: multispeed: no link at 10G or 1G; left at 10G"
                 ),
                 None => {}
             }
         }
-        f82599::Setup::Copper { phy, id, advertised, restarted, .. } => println!(
+        f82599::Setup::Copper { phy, id, advertised, restarted, .. } => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {} PHY {id:08x} at MDIO {phy}, advertising {}, {}",
             mdio::name(id), speeds(advertised),
             if restarted { "AN and MAC pipeline restarted" } else { "AN not restarted (veto)" }
@@ -760,22 +767,22 @@ fn log_82599(at: &impl core::fmt::Display, dev: u16, setup: &f82599::Setup) {
 
 fn log_x552(at: &impl core::fmt::Display, dev: u16, setup: &x552::Setup) {
     match *setup {
-        x552::Setup::Kx4 => println!(
+        x552::Setup::Kx4 => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: KX4, run by the hardware; nothing written"
         ),
-        x552::Setup::Xfi => println!(
+        x552::Setup::Xfi => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: XFI, run by the hardware; nothing written"
         ),
-        x552::Setup::FirmwarePhy => println!(
+        x552::Setup::FirmwarePhy => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: external 1G PHY run by firmware; nothing written"
         ),
-        x552::Setup::Kr { link_ctrl } => println!(
+        x552::Setup::Kr { link_ctrl } => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: KR PHY auto-negotiating KR+KX (LINK_CTRL_1 {link_ctrl:08x}), restarted"
         ),
-        x552::Setup::ManageabilityVeto => println!(
+        x552::Setup::ManageabilityVeto => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware"
         ),
-        x552::Setup::Sfp { module: ref m, link_ctrl: Some(lc1), edc: Some(edc), speed, rate_select, crosstalk, .. } => println!(
+        x552::Setup::Sfp { module: ref m, link_ctrl: Some(lc1), edc: Some(edc), speed, rate_select, crosstalk, .. } => note!(!rate_select || crosstalk.is_none(), 
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}, KR PHY {} (LINK_CTRL_1 {lc1:08x}), CS4227 EDC {}{}{}{}",
             module(m),
             if lc1 & (1 << 18) != 0 { "10G" } else { "1G" },
@@ -788,12 +795,12 @@ fn log_x552(at: &impl core::fmt::Display, dev: u16, setup: &x552::Setup) {
                 None => ", NVM word 0x2C unreadable (host interface), cage-presence check off",
             }
         ),
-        x552::Setup::Sfp { module: ref m, .. } => println!(
+        x552::Setup::Sfp { module: ref m, .. } => note!(m.present(), 
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}{}",
             module(m),
             if m.present() { ", not supported; link not set up" } else { "" }
         ),
-        x552::Setup::Copper { internal, advertised, restarted, .. } => println!(
+        x552::Setup::Copper { internal, advertised, restarted, .. } => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: internal link {}, X557 advertising {}, {}",
             match internal { x552::Internal::Ixfi => "iXFI forced", x552::Internal::Kr => "KR (set at copper link-up)" },
             speeds(advertised),

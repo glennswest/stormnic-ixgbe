@@ -9,6 +9,12 @@ license = "MIT"
 name = "stormnic-ixgbe"
 path = "src/main.rs"
 
+[features]
+# Print the whole bring-up trace on the console at every boot (#22). Without
+# it the trace is printed only when the EFI variable StormnicVerbose is set
+# (src/console.rs).
+verbose = []
+
 [dependencies]
 uefi = { version = "0.39", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
 uefi-raw = "0.15"

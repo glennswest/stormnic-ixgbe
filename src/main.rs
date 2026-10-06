@@ -11,12 +11,16 @@
 
 extern crate alloc;
 
+// First: its macros (say!, trace!, fail!, note!) are used by the modules below.
+#[macro_use]
+mod console;
 mod binding;
 mod decode;
 mod hardware;
 mod ids;
 mod pci_io;
 mod snp;
+mod trace;
 
 use uefi::prelude::*;
 
@@ -25,17 +29,18 @@ fn main() -> Status {
     if uefi::helpers::init().is_err() {
         return Status::LOAD_ERROR;
     }
+    console::init();
     let version = env!("CARGO_PKG_VERSION");
     match binding::install() {
         Ok(()) => {
-            uefi::println!(
+            trace!(
                 "stormnic-ixgbe {version}: driver binding installed ({} Intel 10G device IDs)",
                 ids::SUPPORTED.len()
             );
             Status::SUCCESS
         }
         Err(e) => {
-            uefi::println!("stormnic-ixgbe {version}: driver binding not installed: {:?}", e.status());
+            say!("stormnic-ixgbe {version}: driver binding not installed: {:?}", e.status());
             e.status()
         }
     }
