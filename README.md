@@ -1,7 +1,7 @@
 # stormnic-ixgbe
 
 A UEFI driver, in Rust (`no_std`), that gives firmware an
-`EFI_SIMPLE_NETWORK_PROTOCOL` for **Intel 82599 / X540 / X552 10 Gb Ethernet (the Linux `ixgbe` family)**.
+`EFI_SIMPLE_NETWORK_PROTOCOL` for **Intel 82599 / X540 / X550 / X552 / X553 10 Gb Ethernet (the Linux `ixgbe` family)**.
 
 ## Why it exists
 
@@ -27,21 +27,27 @@ the only Intel 10G driver stormbootx ships (#5, stormbootx#27, stormbootx#81).
 ## Hardware
 
 `src/ids.rs` lists the Intel (8086) 10 GbE physical functions the driver
-binds, 26 device IDs:
+binds, 37 device IDs:
 
 | Family | Device IDs |
 |---|---|
 | 82599 | 10f7, 10f8, 10f9, 10fb (SFP+), 10fc, 1507, 1514, 1517, 151c (10GBASE-T), 1529, 152a, 154a, 154d, 154f (LS), 1557, 1558 (QSFP+), 155d (bypass) |
 | X540 (simulation only) | 1528 (X540-T), 1560 (X540-T1), 155c (bypass) |
+| X550 (simulation only) | 1563 (X550-T2), 15d1 (X550-T1) |
 | X552 (Xeon D-1500; simulation only) | 15aa (KX4), 15ab (KR), 15ac (SFP+), 15ad (X552/X557-AT), 15ae (1000BASE-T), 15b0 (XFI) |
+| X553 (Atom C3000; simulation only) | 15c2 (KR), 15c3 (L KR), 15c4 (N SFP+), 15c6 (SGMII), 15c7 (L SGMII), 15c8 (X553/X557-AT), 15ce (SFP+), 15e4 (1GbE), 15e5 (L 1GbE) |
 
-The X540 and X552 paths have run only against the simulated devices in
-`test/hardware.rs`; no lab machine has those chips. The owner chose to ship
-them anyway (#15), and Start prints a warning when one runs (#17).
+The X540, X550, X552 and X553 paths have run only against the simulated
+devices in `test/hardware.rs`; no lab machine has those chips. The owner
+chose to ship them anyway (#15 for the X540/X552, #23 for the X550/X553),
+and Start prints a warning when one runs (#17). The X550 and X553 follow
+`docs/spec/phy.md` section 12.
 
 It only binds a function whose class code is network (0x02). Virtual
-functions (82599 10ed, 152e; X540 1515, 1530; X552 15a8, 15a9) are
-deliberately left out. 82599_LS (154f) is missing from Intel's shared-code
+functions (82599 10ed, 152e; X540 1515, 1530; X550 1564, 1565; X552 15a8,
+15a9; X553 15b4, 15c5) are deliberately left out, and so are the X553 QSFP+
+IDs 15ca and 15cc, for which Intel's shared code has no working link path
+(spec 12.1). 82599_LS (154f) is missing from Intel's shared-code
 MAC-type table, but its media type gives it the backplane path (the NVM's
 AUTOC; `docs/spec/phy.md` 11.1, #16); it has not been seen on hardware.
 server1's port is
@@ -142,9 +148,12 @@ driver on its media, then calls the binding for each controller:
        T3 (151c): TN1010 reset.
      - **X552** 15ac: CS4227 reset once per power-on, then module ID.
        15ad: X557 found, its power-up stall released, and the PHY reset.
+     - **X553** 15c4/15ce: module ID. 15c8: as X552 15ad, with every MDIO
+       access under the firmware's PHY token. 15e4/15e5: the firmware PHY
+       identified, reset and set up through firmware PHY activities.
   3. MAC reset: LNK_RST if the link is down, RST if it is up; always RST
-     under the PHY semaphore on the X540. Then NVM auto-read, and the
-     port's MAC from RAR0 as the NVM provisioned it;
+     under the PHY semaphore on the X540 and X550. Then NVM auto-read, and
+     the port's MAC from RAR0 as the NVM provisioned it;
   4. link setup per family:
      - **82599** SFP+: the NVM's init sequence for the module into CORECTL,
        AUTOC to 10G SFI with a pipeline reset, laser on (SDP3) unless
@@ -152,20 +161,30 @@ driver on its media, then calls the binding for each controller:
        rate select; none on QSFP+). Backplane and 154f: the NVM
        advertisement kept. T3: the TN1010 advertises and restarts AN.
      - **X540**: the PHY powered on, all its speeds advertised, AN restarted.
+       **X550**: the same, plus 2.5G and 5G.
      - **X552** by device: 15ab KR AN (KR+KX) over the IOSF sideband.
        15ac: the NVM's crosstalk-fix word read through the firmware host
        interface, then the KR PHY and CS4227 EDC mode per module speed (10G
        then 1G with soft rate select for multispeed modules). 15ad: internal iXFI
        forced, X557 advertising 10G+1G. 15aa KX4, 15b0 XFI and 15ae 1G-T:
        nothing written.
+     - **X553** by device: 15c2/15c3 KR AN (KR+KX; KX only on 15c3) with
+       the lane mode and the firmware's AN-restart flag in PMD_FLX_MASK_ST20;
+       left alone on a 2.5G backplane. 15c6/15c7: SGMII at 1G. 15e4/15e5:
+       internal SGMII AN, then the firmware PHY's link set up (no pause, no
+       EEE), and forced down if it reports over-temperature. 15c4: native
+       SFI per module speed. 15ce: KR per module speed and the CS4227/CS4223
+       retimer's EDC mode over MDIO. 15c8: X557 advertising 10G+1G; the
+       internal link is KR.
 
      AN restarts, PHY resets and link-mode writes are skipped under the
      manageability veto;
   5. waits for link, polling every 100 ms: 9 s for 10GBASE-T, 3 s otherwise.
-     On X552 15ad the internal link is re-forced to the copper speed at
-     copper link-up, and link is up only when LINKS and the X557 agree.
-     With the NVM's crosstalk fix on (82599 SFP+/QSFP+, X552 15ac) an empty
-     cage is link down. Link down is reported, not an error;
+     On X552 15ad and X553 15c8 the internal link is re-forced to the
+     copper speed at copper link-up, and link is up only when LINKS and the
+     X557 agree. With the NVM's crosstalk fix on (82599 SFP+/QSFP+, X552
+     15ac, X553 15c4/15ce) an empty cage is link down. Link down is
+     reported, not an error;
   6. maps the descriptor rings and buffers for DMA, starts RX/TX queue 0,
      and, if the link is up, runs the DMA check: one broadcast frame sent,
      up to 3 s listening for any frame, GPTC/GPRC logged. Then it stops the
@@ -238,8 +257,8 @@ A quiet boot on server3 prints, for the 82599, the one line
 `stormnic-ixgbe 0.1.0: 0000:03:00.0 8086:1557 82599EN SFP+: MAC ac:1f:6b:8a:a4:5c, link up 10000 Mb/s, SNP installed`.
 
 `LOC` is `seg:bus:dev.fn`, or `(location unknown)` if
-GetLocation fails. `PHY` is `X540`, `X557`, `TN1010`, `88E1500`, `88E1543`
-or `unknown PHY`; `ID` its 32-bit MDIO ID with the revision masked.
+GetLocation fails. `PHY` is `X540`, `X550`, `X557`, `TN1010`, `88E1500`,
+`88E1543` or `unknown PHY`; `ID` its 32-bit MDIO ID with the revision masked.
 `MODULE` is `passive DA`, `active limiting DA`, `10G SR/LR`, `1000BASE-T`,
 `1000BASE-SX`, `1000BASE-LX`, `10G BX`, `1000BASE-BX`, `unknown` or `none`,
 then `, multispeed` if so and `(id X, 10G X, 1G X, cable X)`. `SPEEDS` is
@@ -247,17 +266,18 @@ e.g. `10G+1G+100M`.
 
 | Line | When | Default |
 |---|---|---|
-| `stormnic-ixgbe 0.1.0: driver binding installed (26 Intel 10G device IDs)` | entry point, success | verbose |
+| `stormnic-ixgbe 0.1.0: driver binding installed (37 Intel 10G device IDs)` | entry point, success | verbose |
 | `stormnic-ixgbe 0.1.0: driver binding not installed: STATUS` | entry point, failure (the image returns that status) | always |
-| `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X552 list; not binding` | Supported (and Start), unlisted Intel NIC | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X550/X552/X553 list; not binding` | Supported (and Start), unlisted Intel NIC | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: Supported` | Supported, will bind | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: already driven by another driver (STATUS); leaving it` | Supported, a platform driver owns it | always |
-| `stormnic-ixgbe: LOC 8086:DDDD: X540/X552 path: verified in simulation only` | Start, an X540 or X552 ID: the first bring-up line, once per Start (#15, #17) | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: X540\|X550\|X552\|X553 path: verified in simulation only` | Start, an X540, X550, X552 or X553 ID: the first bring-up line, once per Start (#15, #17, #23) | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: manageability veto (MMNGC.MNG_VETO): no PHY reset, AN restart or link-mode write` | Start, manageability owns the link | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: PHY/module check failed: ERROR; link left to hardware, reporting LINKS only` | Start, a step before the reset failed (e.g. `Semaphore { held: .. }`, `NoPhy`, `I2c { .. }`, `Cs4227 { .. }`, `PhyReset`) | always, after the kept steps |
 | `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N, reset\|not reset (veto)\|not reset (over-temperature alarm)` | Start, 82599 151c (PHY `TN1010`) | always with the over-temperature alarm, else verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: CS4227 reset\|CS4227 already reset` | Start, X552 15ac | verbose |
-| `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N (NW_MNG_IF_SEL X)[, power-up stall released], reset\|not reset (veto)` | Start, X552 15ad (PHY `X557`) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N (NW_MNG_IF_SEL X)[, power-up stall released], reset\|not reset (veto)` | Start, X552 15ad and X553 15c8 (PHY `X557`) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: firmware PHY ID, speed bits X, reset and set up\|not reset (veto)\|reset; firmware reports it down (over-temperature)` | Start, X553 15e4/15e5 | always when down, else verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: reset (RST\|LNK_RST, link was down), LAN N, MAC xx:xx:xx:xx:xx:xx` | Start, MAC reset done, NVM MAC read | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: EEMNGCTL CFG_DONEn not set after 1 s (EEMNGCTL 0xXXXXXXXX); NVM auto-read done, continuing` | Start, after the reset: this port's configuration-done bit never set (seen on the X9 blades, #21); not fatal | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup failed: ERROR; reporting LINKS only` | Start, link setup failed (e.g. `NoInitSequence { key: .. }`, `PipelineReset`, `Sideband { .. }`, `Semaphore { .. }`) | always, after the kept steps |
@@ -269,19 +289,25 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: multispeed: link at N Mb/s` | Start, 82599 multispeed module linked while trying speeds | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: multispeed: no link at 10G or 1G; left at 10G` | Start, 82599 multispeed module: 10G, 1G and 10G again all stayed down (#26) | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, advertising SPEEDS, AN and MAC pipeline restarted\|AN not restarted (veto)` | Start, 82599 151c | verbose |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, powered on, advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X540 (PHY `X540`) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, powered on, advertising SPEEDS[+5G+2.5G], AN restarted\|AN not restarted (veto)` | Start, X540 (PHY `X540`) and X550 (PHY `X550`, with `+5G+2.5G`) | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: KX4, run by the hardware; nothing written` | Start, X552 15aa | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: XFI, run by the hardware; nothing written` | Start, X552 15b0 | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: external 1G PHY run by firmware; nothing written` | Start, X552 15ae | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: KR PHY auto-negotiating KR+KX (LINK_CTRL_1 X), restarted` | Start, X552 15ab | verbose |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware` | Start, X552 15ab under the veto | verbose (the veto line above is always shown) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE[, not supported; link not set up]` | Start, X552 15ac, no module or an unsupported one (unknown, 1000BASE-T) | always when a module is fitted but not supported, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware` | Start, X552 15ab, X553 15c2/15c3/15c6/15c7 under the veto | verbose (the veto line above is always shown) |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE[, not supported; link not set up]` | Start, X552 15ac or X553 15c4/15ce, no module or an unsupported one (unknown, 1000BASE-T) | always when a module is fitted but not supported, else verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, KR PHY 10G\|1G (LINK_CTRL_1 X), CS4227 EDC CX1\|SR[, multispeed: link at 10G\|1G][, soft rate select failed][, cage-presence check on\|, NVM word 0x2C unreadable (host interface), cage-presence check off]` | Start, X552 15ac module set up | always with `soft rate select failed` or `NVM word 0x2C unreadable`, else verbose |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: internal link iXFI forced\|KR (set at copper link-up), X557 advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X552 15ad | verbose |
-| `stormnic-ixgbe: LOC 8086:DDDD: copper link up N Mb/s, internal link re-forced N time(s)` | Start, X552 15ad copper up (1000 or 10000) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: internal link iXFI forced\|KR (set at copper link-up), X557 advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X552 15ad, X553 15c8 (always KR) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: copper link up N Mb/s, internal link re-forced N time(s)` | Start, X552 15ad or X553 15c8 copper up (1000 or 10000) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: KR PHY auto-negotiating KR+KX\|KX (LINK_CTRL_1 X), restarted` | Start, X553 15c2 (KR+KX) or 15c3 (KX) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: 2.5G backplane (NW_MNG_IF_SEL X); link left as it is` | Start, X553 15c2/15c3 strapped for 2.5G | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: SGMII 1G (LINK_CTRL_1 X, SGMII_CTRL X, FLX_MASK_ST20 X), restarted` | Start, X553 15c6/15c7 | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, native SFI 10G\|1G (FLX_MASK_ST20 X)\|KR PHY 10G\|1G (LINK_CTRL_1 X), CS4227\|CS4223 EDC CX1\|SR at REG[, multispeed: link at 10G\|1G][, soft rate select failed][, cage-presence check on\|, NVM word 0x2C unreadable (host interface), cage-presence check off]` | Start, X553 15c4 (native SFI) or 15ce (retimer) module set up | always with `soft rate select failed` or `NVM word 0x2C unreadable`, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: internal SGMII AN (FLX_MASK_ST20 X), firmware PHY speed bits X[, over-temperature: link forced down]` | Start, X553 15e4/15e5 | always with over-temperature, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: firmware PHY left as it is (veto)` | Start, X553 15e4/15e5 under the veto | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: copper link down` | Start, X552 15ad, no copper link within the wait | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: copper link up at a speed the internal link cannot carry (AN vendor status X)` | Start, X552 15ad, copper at 10/100 Mb/s | always |
-| `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (100, 1000, 2500 on X552, or 10000) | verbose (the summary line has it) |
+| `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (10 on X553 1G copper, 100, 1000, 2500 from the X550 on, 5000 on X550, or 10000) | verbose (the summary line has it) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link up, speed encoding reserved` | Start, link up with a reserved speed field | verbose (the summary line has it) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise); the raw registers at the end of the wait, to tell a dead cable or partner (no signal detect, no PCS sync in LINKS) from a setup problem (#26) | verbose (the summary line has it) |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA: 33 pages at device 0xX, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors` | Start, DMA region mapped | verbose |
@@ -333,8 +359,8 @@ bring-up and PHY (including a bit-level I2C slave for the SFP+ EEPROM, port
 expander and CS4227), rings, SNP and PCI decode.
 
 Not verified on hardware:
-- the X540 and X552 paths: no lab hardware (#15, #23). Start says so on the
-  console when one runs (#17);
+- the X540, X550, X552 and X553 paths: no lab hardware (#15, #23). Start
+  says so on the console when one runs (#17);
 - 154f, QSFP+ (1558) and the X552 host-interface NVM read (#16): no lab
   hardware;
 - Start's DMA check: on server3 it sent its frame but received nothing in

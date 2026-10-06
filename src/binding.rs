@@ -187,7 +187,7 @@ impl IxgbeDriver {
             Some(nic) => Ok((nic, location)),
             None => {
                 trace!(
-                    "stormnic-ixgbe: {} 8086:{:04x}: Intel network function, not in the 82599/X540/X552 list; not binding",
+                    "stormnic-ixgbe: {} 8086:{:04x}: Intel network function, not in the 82599/X540/X550/X552/X553 list; not binding",
                     at(location),
                     id.device
                 );

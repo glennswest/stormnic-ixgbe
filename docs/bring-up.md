@@ -9,10 +9,11 @@ See [PHY and link programming per the spec](#phy-and-link-programming-per-the-sp
 which supersedes the earlier 82599/X540 datasheet link setup and the first
 X552 implementation described further down. The 82599 SFP+ path has run
 on hardware (server3, 8086:1557, 2026-10-01: 10G SFI link on a passive DA
-cable). The X540 and X552 paths have not; they ship verified in simulation
-only (owner, #15), and Start prints `X540/X552 path: verified in simulation
-only` before any PHY or link step when one runs (#17). See
-[Hardware checks](#hardware-checks-spec-section-10).
+cable). The X540, X550, X552 and X553 paths have not; they ship verified in
+simulation only (owner, #15 and #23), and Start prints `X540|X550|X552|X553
+path: verified in simulation only` before any PHY or link step when one runs
+(#17). See [Hardware checks](#hardware-checks-spec-section-10) and
+[X550 and X553](#x550-and-x553-23-2026-10-06).
 
 ## PHY and link programming per the spec (#13, 2026-09-29)
 
@@ -28,13 +29,15 @@ sections ("spec 5.4").
 | File | Spec | What |
 |---|---|---|
 | `src/hardware.rs` | 1.3, 1.5, 5.13, 6.7, 7.11, 8, 9 | `begin` (port, quiesce), `veto` (MMNGC once), `prepare`, `reset` (per family), `nvm_word` (EERD), `setup_link`, `link`, `cage_link` (crosstalk fix, 11.4), `wait_link` |
-| `src/sync.rs` | 1.4 | SW/FW semaphores: 82599 SMBI+SWESMBI, X540/X552 SMBI+REGSMP; 200 × 5 ms (82599, X540) or 1000 × 5 ms (X552); release delays; X552 port-1 I2C mux |
-| `src/mdio.rs` | 2 | clause 45 access per register under the port's PHY semaphore; probe/scan (ID with revision masked); generic and X557 PHY reset; 1.0x0004 abilities; the 6.5 advertisement and AN restart; 7.0x0001 read twice |
+| `src/sync.rs` | 1.4, 12.2, 12.5 | SW/FW semaphores: 82599 SMBI+SWESMBI, X540 and later SMBI+REGSMP (X553 at 0x15F70/0x15F78); 200 × 5 ms (82599, X540) or 1000 × 5 ms (X550 on); release delays; X552 port-1 I2C mux; the X553 PHY token |
+| `src/hostif.rs` | 12.4–12.6 | host-interface command (FLEX_MNG, HICR.C/SV, response read back), the X553 PHY token, firmware PHY activities |
+| `src/mdio.rs` | 2, 12.3, 12.5 | clause 45 access per register under the port's PHY semaphore (and the PHY token on the X553); probe/scan (ID with revision masked); generic and X557 PHY reset; 1.0x0004 abilities; the 6.5 advertisement (with the X550's 2.5G/5G) and AN restart; 7.0x0001 read twice |
 | `src/i2c.rs` | 3 | bit-bang with both I2CCTL layouts (0x28 and 0x15F5C); ACK sampled 10 × 1 µs; byte reads 11 (82599) / 4 (X552) attempts, locked per attempt with 100 ms after a failure; writes 2 attempts; 82599 QSFP bus handshake; CS4227 combined read (checksum byte NACKed) and write |
 | `src/sfp.rs` | 4, 11.3 | SFF-8472 identification in the spec's order (identifier re-read up to 5 times, a failed read is "not present", 10G-BX before BX10), multispeed, support rule, NVM key; QSFP and its multispeed rule; soft rate select |
 | `src/f82599.rs` | 5, 9.1–9.4, 11.1, 11.3 | media by device ID (154f: LCO, the backplane path); NVM init sequence into CORECTL under MAC_CSR; protected AUTOC write with pipeline reset and LESM; capabilities; `setup_mac_link`; multispeed; laser; hard/soft rate select; crosstalk link check; TN1010 |
-| `src/x540.rs` | 6, 9.5 | scan, power on (30.0x0000 bit 11), advertise all abilities, restart AN unless vetoed |
-| `src/x552.rs` | 7, 9.6–9.9, 11.2, 11.4 | NVM word through the firmware host interface; IOSF sideband, KR AN, iXFI, mux, CS4227 check-and-reset, SFP per-speed step and multispeed, X557 unstall/reset/advertise, copper watch |
+| `src/x540.rs` | 6, 9.5, 12.3 | X540 and X550: scan, power on (30.0x0000 bit 11), advertise all abilities (X550: plus 2.5G/5G), restart AN unless vetoed |
+| `src/x552.rs` | 7, 9.6–9.9, 11.2, 11.4, 12.7 | NVM word through the firmware host interface; IOSF sideband, KR AN (with the X553's FLX register), iXFI, mux, CS4227 check-and-reset, SFP per-speed step and multispeed (shared with the X553), X557 unstall/reset/advertise, copper watch |
+| `src/x553.rs` | 12.8–12.13 | X553 per device: KR, SGMII, firmware PHY, native SFI, MDIO retimer, X557 via `x552`; reset mask and MDIO clock |
 
 ### Order (spec 9)
 
@@ -146,6 +149,50 @@ recommendation).
 - EERD (NVM word read) is from the 82599 datasheet (8.2.3.2.2). The spec
   assumes NVM access is available.
 
+### X550 and X553 (#23, 2026-10-06)
+
+Written from `docs/spec/phy.md` section 12, an addendum by this driver's
+maintainers from Intel's BSD shared code (FreeBSD `sys/dev/ixgbe` at
+32b8381d711c). The owner chose simulation only (#23, option 2): no lab
+machine has either chip, and hardware verification is a separate issue for
+when one exists.
+
+- **X550 (1563, 15d1)** runs the X540 path (`src/x540.rs`): RST under the
+  PHY bit, 100 ms, PHY scan (ID 0x01540220), power on, advertise, AN
+  restart. It also advertises 2.5G and 5G (7.0xC400 bits 10, 11); LINKS
+  reads 2.5G and 5G with NON_STD.
+- **X553** (`src/x553.rs`): SWSM, SW_FW_SYNC and EEC at 0x15F70, 0x15F78 and
+  0x15FF8 (`src/sync.rs`, `hardware::reset`). Every MDIO access holds the
+  port's PHY bit and then the firmware's PHY token (`src/hostif.rs`, host
+  command 0x0A; busy is retried for 5 s, 5 ms apart, giving the SW_FW_SYNC
+  bits back in between). The KR PHY's AN set-up and restart also write
+  PMD_FLX_MASK_ST20 (lane mode, firmware AN-restart flag) in
+  `x552::kr_autoneg` and `x552::restart_an`.
+  - 15c2/15c3 KR: KR+KX (KX only on 15c3) unless vetoed; a board strapped
+    for 2.5G (NW_MNG_IF_SEL bit 20) is left alone.
+  - 15c6/15c7 SGMII: SGMII at 1G unless vetoed.
+  - 15e4/15e5 1G copper: GET_PHY_INFO, then (unless vetoed) PHY_SW_RESET,
+    INIT_PHY, SETUP_LINK before the MAC reset; after it, internal SGMII AN,
+    SETUP_LINK again, GET_LINK_INFO; over-temperature forces the link down.
+  - 15c8 10G_T: the X552 15ad path with the internal link always KR.
+  - 15c4 SFP+ N: native SFI per speed in PMD_FLX_MASK_ST20. 15ce SFP+: KR per
+    speed, then the CS4227/CS4223 EDC mode over MDIO at NW_MNG_IF_SEL's
+    address (CS4223: the slice counts NVM word 0x45's MAC instance). Both use
+    the X552's module rules, multispeed loop and crosstalk word; there is no
+    I2C mux.
+- **Not bound:** X553 QSFP+ 15ca/15cc (the shared code has no working path,
+  spec 12.1).
+- **Deviations, stated:** the veto is honoured on SGMII (the shared code
+  does not check it there); the 1G copper SETUP_LINK asks for no pause and
+  no EEE (the shared code asks for both); the X553 10G_T needs LINKS and the
+  X557 to agree, as on the X552 (the shared code reads LINKS only); and the
+  firmware PHY is set up once before and once after the MAC reset (the
+  shared code's reset and link set-up do the same).
+- **To check on hardware** (spec 12.14): X550 2.5G/5G LINKS and
+  advertisement; X553 EEC at 0x15FF8 with AUTO_RD and EE_PRES; the PHY
+  token's statuses; GET_PHY_INFO on 15e4/15e5; the FLX AN-restart bit; the
+  CS4227/CS4223 SKU read on 15ce.
+
 ### Hardware checks (spec section 10)
 
 **Boot verbose for these checks** (#22): most lines they read (`reset (…)`,
@@ -216,6 +263,7 @@ Not checkable on the X9 blades (no such hardware known):
   AN_RESTART self-clear), 8–9 (CS4227 checksum and the scratch handshake over
   AC and warm resets) and 14 (Marvell 1G-T).
 - 82599_LS (item 2).
+- X550 and X553: spec 12.14 (see [X550 and X553](#x550-and-x553-23-2026-10-06)).
 
 The console lines print what each check needs: the PHY at its MDIO address,
 NW_MNG_IF_SEL, LINK_CTRL_1 and the CS4227 reset or not.
