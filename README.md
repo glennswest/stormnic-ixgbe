@@ -373,3 +373,7 @@ Open: the console trace is verbose on every boot (#22); the image is not
 byte-reproducible across build directories (#12). `ipxe-intelx.efi` is retired:
 stormbootx v0.17.0 ships no iPXE, and this driver is the X9 blades' Intel
 driver on the rustnic media (#5).
+
+## Licence
+
+MIT (see LICENSE). NOTICE acknowledges the sources the hardware facts were learned from; no code was copied.
