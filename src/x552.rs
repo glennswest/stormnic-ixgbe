@@ -16,12 +16,18 @@
 //!   NW_MNG_IF_SEL), advertise 10G + 1G, and re-force the internal link to
 //!   the copper speed whenever copper comes up.
 //! - 15ae 1000BASE-T: the external Marvell PHY is run by firmware; nothing to write.
+//!
+//! The X552 NVM is read through the firmware's host interface (`nvm_word`,
+//! spec 11), not EERD; the SFP device reads the crosstalk-fix word with it.
 
 use super::mdio::{self, Speeds, ONE};
 use super::sfp::{self, Module};
 use super::{delay_ms, flush, i2c, read, sync, write, Error, Family, Link, Port, Registers,
     ESDP, HLREG0, LINKS, MMNGC, R};
 
+const HICR: u32 = 0x15f00;
+const FWSTS: u32 = 0x15f0c;
+const FLEX_MNG: u32 = 0x15800;
 const IOSF_CTRL: u32 = 0x11144;
 const IOSF_DATA: u32 = 0x11148;
 const NW_MNG_IF_SEL: u32 = 0x11178;
@@ -258,6 +264,55 @@ fn check_cs4227<Io: Registers>(io: &mut Io, port: Port) -> R<bool, Io::Error> {
     Ok(true)
 }
 
+// Host interface (spec 11).
+const HICR_EN: u32 = 1 << 0;
+const HICR_C: u32 = 1 << 1;
+const HICR_SV: u32 = 1 << 2;
+const FWSTS_FWRI: u32 = 1 << 9;
+/// Shadow RAM read: command 0x31, buffer length 6, checksum 0xFF, as the
+/// little-endian first dword of the command block.
+const READ_SHADOW_RAM: u32 = 0xff06_0031;
+const HI_TIMEOUT_US: usize = 500_000;
+
+// ---- NVM -------------------------------------------------------------------
+
+/// One NVM word through the host interface (spec 11): the shadow-RAM read
+/// command in FLEX_MNG, HICR.C set, C polled clear for up to 500 ms, SV
+/// required; the word is the low half of FLEX_MNG dword 3. Holds SW_MNG and
+/// EEP for the whole exchange.
+pub fn nvm_word<Io: Registers>(io: &mut Io, port: Port, word: u16) -> R<u16, Io::Error> {
+    sync::locked(io, port, sync::SW_MNG | sync::EEP, |io| {
+        let fwsts = read(io, FWSTS)?;
+        write(io, FWSTS, fwsts | FWSTS_FWRI)?;
+        let hicr = read(io, HICR)?;
+        if hicr & HICR_EN == 0 { return Err(Error::HostInterface { hicr }); }
+        // Byte address, big-endian; length 2 bytes, big-endian.
+        let block = [READ_SHADOW_RAM, (word as u32 * 2).swap_bytes(), 0x0000_0200, 0];
+        for (i, v) in block.iter().enumerate() { write(io, FLEX_MNG + 4 * i as u32, *v)?; }
+        write(io, HICR, hicr | HICR_C)?;
+        let mut last = hicr | HICR_C;
+        for _ in 0..HI_TIMEOUT_US / 10 {
+            last = read(io, HICR)?;
+            if last & HICR_C == 0 { break; }
+            io.delay_us(10);
+        }
+        if last & HICR_C != 0 || last & HICR_SV == 0 { return Err(Error::HostInterface { hicr: last }); }
+        // The data dword's upper half is padding, so all-ones is not a
+        // removed device here: read it raw.
+        Ok(io.read(FLEX_MNG + 12).map_err(Error::Io)? as u16)
+    })
+}
+
+/// The crosstalk fix (spec 4.4): NVM word 0x2C bit 7 clear. None when the
+/// host interface or its semaphore was unavailable; the fix is then off.
+fn crosstalk_fix<Io: Registers>(io: &mut Io, port: Port) -> R<Option<bool>, Io::Error> {
+    match nvm_word(io, port, 0x2c) {
+        Ok(caps) => Ok(Some(caps & 0x80 == 0)),
+        Err(Error::HostInterface { .. } | Error::Semaphore { .. }) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 // ---- Per-device ------------------------------------------------------------
 
 /// Which internal (MAC-to-X557) link the board straps (NW_MNG_IF_SEL bit 24).
@@ -354,9 +409,11 @@ pub enum Setup {
     /// 15ac: `module` found. For a supported module, the KR PHY and the
     /// CS4227 line side (`edc`: CX1 or SR) were set for the last speed tried,
     /// and `speed` is the speed link came up at while trying (multispeed).
+    /// `crosstalk`: the NVM's crosstalk fix (spec 4.4), None if the word
+    /// could not be read (or no supported module, so not read).
     Sfp {
         module: Module, cs4227_reset: bool, link_ctrl: Option<u32>, edc: Option<u16>,
-        speed: Option<u32>, rate_select: bool,
+        speed: Option<u32>, rate_select: bool, crosstalk: Option<bool>,
     },
     /// 15ad: X557 at MDIO `phy`, advertising `advertised`.
     Copper {
@@ -394,13 +451,17 @@ fn sfp_speed<Io: Registers>(io: &mut Io, port: Port, module: Module, ten: bool) 
     Ok((link_ctrl, edc))
 }
 
-fn links_up<Io: Registers>(io: &mut Io) -> R<bool, Io::Error> {
-    Ok(super::link(io, Family::X552)? != Link::Down)
+fn links_up<Io: Registers>(io: &mut Io, crosstalk: bool) -> R<bool, Io::Error> {
+    Ok(super::cage_link(io, Family::X552, crosstalk)? != Link::Down)
 }
 
 fn sfp_link<Io: Registers>(io: &mut Io, port: Port, module: Module, cs4227_reset: bool) -> R<Setup, Io::Error> {
-    let mut setup = Setup::Sfp { module, cs4227_reset, link_ctrl: None, edc: None, speed: None, rate_select: true };
+    let mut setup = Setup::Sfp {
+        module, cs4227_reset, link_ctrl: None, edc: None, speed: None, rate_select: true, crosstalk: None,
+    };
     if !module.supported(Family::X552) { return Ok(setup); }
+    let fix = crosstalk_fix(io, port)?;
+    let cage = fix == Some(true);
     // Spec 7.7.5: 1G modules 1G only, others 10G plus 1G if multispeed.
     let s = if module.one_gig() { ONE } else { Speeds { g10: true, g1: module.multispeed, m100: false } };
     let mut last = (0, 0);
@@ -418,18 +479,19 @@ fn sfp_link<Io: Registers>(io: &mut Io, port: Port, module: Module, cs4227_reset
             let mut up = false;
             for _ in 0..polls {
                 delay_ms(io, 100);
-                if links_up(io)? { up = true; break; }
+                if links_up(io, cage)? { up = true; break; }
             }
             if up { speed = Some(if ten { 10_000 } else { 1000 }); break; }
         }
     } else {
         last = sfp_speed(io, port, module, s.g10)?;
     }
-    if let Setup::Sfp { link_ctrl, edc, speed: sp, rate_select, .. } = &mut setup {
+    if let Setup::Sfp { link_ctrl, edc, speed: sp, rate_select, crosstalk, .. } = &mut setup {
         *link_ctrl = Some(last.0);
         *edc = Some(last.1);
         *sp = speed;
         *rate_select = rate_ok;
+        *crosstalk = fix;
     }
     Ok(setup)
 }

@@ -36,7 +36,6 @@ const LINK_DISABLE: u32 = 7 << 28;
 // LINKS.
 const KX_AN_COMP: u32 = 1 << 31;
 // ESDP pins (spec A.2).
-const SDP2: u32 = 1 << 2;
 const SDP3: u32 = 1 << 3;
 const SDP5: u32 = 1 << 5;
 const SDP3_DIR: u32 = 1 << 11;
@@ -55,6 +54,10 @@ pub enum Media {
     Qsfp,
     /// T3 LOM (151c): external TN1010 10GBASE-T PHY on MDIO.
     Copper,
+    /// 82599_LS (154f), the shared code's `fiber_lco`: no module ID, laser
+    /// or rate select, and not multispeed, so the NVM AUTOC is run as for a
+    /// backplane (spec 1.2, 10 item 2).
+    Lco,
 }
 
 pub fn media(device: u16) -> Media {
@@ -63,6 +66,7 @@ pub fn media(device: u16) -> Media {
         0x155d => Media::FiberFixed,
         0x1558 => Media::Qsfp,
         0x151c => Media::Copper,
+        0x154f => Media::Lco,
         _ => Media::Backplane,
     }
 }
@@ -82,7 +86,7 @@ pub enum Prepared {
 /// module, or find and reset the copper PHY.
 pub fn prepare<Io: Registers>(io: &mut Io, port: Port, veto: bool) -> R<Prepared, Io::Error> {
     match media(port.device) {
-        Media::Backplane => Ok(Prepared::Backplane),
+        Media::Backplane | Media::Lco => Ok(Prepared::Backplane),
         Media::Fiber | Media::FiberFixed => Ok(Prepared::Module(sfp::identify(io, port)?)),
         Media::Qsfp => {
             super::i2c::qsfp_setup(io)?;
@@ -127,7 +131,7 @@ pub enum Laser {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setup {
-    /// Backplane/CX4: `setup_mac_link` with the NVM capabilities. `written`
+    /// Backplane/CX4/LCO: `setup_mac_link` with the NVM capabilities. `written`
     /// is false when AUTOC already matched (the usual case); `an_complete`
     /// is the KX_AN_COMP wait in AN modes after a write.
     Backplane { autoc: u32, autoc2: u32, written: bool, an_complete: Option<bool> },
@@ -345,16 +349,9 @@ fn rate_select<Io: Registers>(io: &mut Io, port: Port, media: Media, ten: bool) 
     }
 }
 
-/// LINKS for the 82599 (spec 4.4, 8.1): with the crosstalk fix active an
-/// empty cage (SDP2 clear) is link down, and "up" is read again after 5 ms.
+/// LINKS for the 82599 behind the crosstalk fix (spec 4.4, 8.1).
 pub fn link<Io: Registers>(io: &mut Io, crosstalk: bool) -> R<Link, Io::Error> {
-    if crosstalk && read(io, ESDP)? & SDP2 == 0 { return Ok(Link::Down); }
-    let state = super::link(io, Family::F82599)?;
-    if crosstalk && state != Link::Down {
-        delay_ms(io, 5);
-        return super::link(io, Family::F82599);
-    }
-    Ok(state)
+    super::cage_link(io, Family::F82599, crosstalk)
 }
 
 fn up<Io: Registers>(io: &mut Io, crosstalk: bool) -> R<bool, Io::Error> {
@@ -421,12 +418,14 @@ fn module_setup<Io: Registers>(io: &mut Io, ctx: &Ctx, m: Module, autoc2: u32) -
         laser(io, true)?;
         Laser::On
     };
-    // Spec 4.4: NVM word 0x2C bit 7 clear on SFP+ media: the crosstalk fix.
-    let crosstalk = media == Media::Fiber && nvm_word(io, 0x2c)? & 0x80 == 0;
+    // Spec 4.4: NVM word 0x2C bit 7 clear on SFP+ or QSFP+ media: the
+    // crosstalk fix.
+    let crosstalk = matches!(media, Media::Fiber | Media::Qsfp) && nvm_word(io, 0x2c)? & 0x80 == 0;
     let fixed = media == Media::FiberFixed;
     let (s, an) = capabilities(ctx.orig, Some((m, fixed)), media == Media::Qsfp);
     let mut st = Speedy { media, an, crosstalk, flap: laser_state == Laser::On, rate_ok: true };
-    let speed = if (m.multispeed || fixed) && media != Media::Qsfp {
+    // Spec 4.5, 5.8: QSFP multispeed runs the same loop with no rate select.
+    let speed = if m.multispeed || fixed {
         multispeed(io, ctx, &mut st, s)?
     } else {
         setup_mac_link(io, ctx, s, an, false, false)?;

@@ -41,6 +41,8 @@ const AUTOC: u32 = 0x42a0;
 const AUTOC2: u32 = 0x42a8;
 const LINKS: u32 = 0x42a4;
 const CORECTL: u32 = 0x14f00;
+const HICR: u32 = 0x15f00;
+const FLEX_MNG: u32 = 0x15800;
 const UP_10G: u32 = (1 << 30) | (3 << 28);
 
 impl Fake {
@@ -129,6 +131,17 @@ impl Registers for Fake {
                 self.i2c.drive(scl, sda);
             }
             I2C_82599 => self.i2c.drive(value & 2 != 0, value & 8 != 0),
+            // X552 firmware, when HICR.EN is set: a shadow-RAM read (0x31)
+            // of the big-endian byte address in dword 1 answers from `nvm`
+            // in dword 3, clears C and sets SV.
+            HICR if value & 3 == 3 && self.stuck != Some(HICR) => {
+                assert_eq!(self.reg(FLEX_MNG), 0xff06_0031, "shadow RAM read command");
+                assert_eq!(self.reg(FLEX_MNG + 8), 0x200, "length 2, big-endian");
+                let word = self.reg(FLEX_MNG + 4).swap_bytes() / 2;
+                let data = *self.nvm.get(&word).unwrap_or(&0) as u32;
+                self.regs.insert(FLEX_MNG + 12, data);
+                self.regs.insert(HICR, (value & !2) | 4);
+            }
             _ => {}
         }
         Ok(())
@@ -701,6 +714,66 @@ fn x82599_qsfp_requests_the_shared_bus() {
     assert_eq!(io.delays(5000), 200);
 }
 
+/// An 82599 QSFP+ port (1558): the shared bus always granted (SDP1).
+fn qsfp(module: &[(usize, u8)]) -> Fake {
+    let mut q = vec![(0, 0x0d)];
+    q.extend_from_slice(module);
+    let mut io = x82599(0, sfp(&q));
+    io.regs.insert(ESDP, 1 << 1);
+    io
+}
+#[test]
+fn x82599_qsfp_sr_sx_is_multispeed_without_rate_select() {
+    let mut io = qsfp(&[(0x83, 0x10), (0x86, 0x01)]);
+    io.regs.insert(LINKS, UP_10G);
+    let (prepared, setup) = run(&mut io, Family::F82599, 0x1558);
+    assert!(matches!(prepared, Prepared::F82599(f82599::Prepared::Module(m)) if m.kind == Kind::SrLr && m.multispeed));
+    let Setup::F82599(f82599::Setup::Module { speed, laser, sequence, crosstalk, .. }) = setup.unwrap() else { panic!() };
+    assert_eq!((speed, laser, sequence, crosstalk), (Some(10_000), Laser::None, Some(2), false));
+    assert!(io.writes_to(ESDP).iter().all(|v| v & ((1 << 13) | (1 << 5) | (1 << 3)) == 0), "no rate select, no laser");
+    // No link at 10G: 1G with no AN (QSFP never auto-negotiates), then back to 10G.
+    let mut io = qsfp(&[(0x83, 0x20), (0x86, 0x02)]);
+    let (_, setup) = run(&mut io, Family::F82599, 0x1558);
+    let Setup::F82599(f82599::Setup::Module { module, speed, autoc, .. }) = setup.unwrap() else { panic!() };
+    assert_eq!((module.multispeed, speed, (autoc >> 13) & 7), (true, None, 3));
+    assert!(io.writes_to(AUTOC).iter().any(|v| (v >> 13) & 7 == 0), "1G tried as LMS 000");
+    // DA and SR-only QSFP modules are single speed.
+    for bytes in [[(0x83, 0x08), (0x86, 0x01)], [(0x83, 0x10), (0x86, 0x02)]] {
+        let mut io = qsfp(&bytes);
+        let (prepared, _) = run(&mut io, Family::F82599, 0x1558);
+        assert!(matches!(prepared, Prepared::F82599(f82599::Prepared::Module(m)) if !m.multispeed), "{bytes:02x?}");
+    }
+}
+#[test]
+fn x82599_qsfp_gets_the_crosstalk_cage_check() {
+    let mut io = qsfp(&[(0x83, 0x10)]);
+    io.nvm.insert(0x2c, 0);
+    io.regs.insert(LINKS, UP_10G);
+    let (_, setup) = run(&mut io, Family::F82599, 0x1558);
+    let setup = setup.unwrap();
+    assert!(matches!(setup, Setup::F82599(f82599::Setup::Module { crosstalk: true, .. })));
+    let p = port(Family::F82599, 0x1558, 0);
+    assert_eq!(hardware::wait_link(&mut io, p, Some(&setup), 0).unwrap().link, Link::Down, "SDP2 clear: empty cage");
+    let esdp = io.reg(ESDP);
+    io.regs.insert(ESDP, esdp | (1 << 2));
+    assert_eq!(hardware::wait_link(&mut io, p, Some(&setup), 0).unwrap().link, Link::Up { megabits: Some(10_000) });
+}
+#[test]
+fn x82599_ls_154f_runs_the_nvm_autoc_like_a_backplane() {
+    assert_eq!(f82599::media(0x154f), f82599::Media::Lco);
+    let mut io = Fake::ready(0);
+    let sfi = (3 << 13) | (1 << 31);
+    io.regs.insert(AUTOC, sfi);
+    io.regs.insert(AUTOC2, 2 << 16);
+    let (prepared, s) = run(&mut io, Family::F82599, 0x154f);
+    assert_eq!(prepared, Prepared::F82599(f82599::Prepared::Backplane));
+    assert_eq!(s, Ok(Setup::F82599(f82599::Setup::Backplane { autoc: sfi, autoc2: 2 << 16, written: false, an_complete: None })));
+    assert!(io.writes_to(AUTOC).is_empty());
+    assert!(io.writes_to(I2C_82599).is_empty(), "no module identification");
+    assert!(io.writes_to(ESDP).is_empty(), "no laser or rate select");
+    assert_eq!(hardware::link_budget_ms(port(Family::F82599, 0x154f, 0)), 3000);
+}
+
 // ---- X540 -----------------------------------------------------------------------
 
 #[test]
@@ -993,4 +1066,47 @@ fn x552_cs4227_waits_for_a_pending_peer_then_takes_over() {
     assert!(matches!(p, Prepared::X552(x552::Prepared::Sfp { cs4227_reset: true, .. })));
     assert!(io.delays(30_000) >= 15);
     assert_eq!(io.i2c.cs[&2], 0x5aa5);
+}
+#[test]
+fn x552_sfp_reads_the_crosstalk_word_through_the_host_interface() {
+    let sfp_port = || {
+        let mut io = Fake::ready(0);
+        io.i2c = Slave::cs4227(&[(2, 0x5aa5)]);
+        io.i2c.sfp = sfp(&[(3, 0x10)]);
+        io.regs.insert(LINKS, UP_10G);
+        io
+    };
+    let mut io = sfp_port();
+    io.regs.insert(HICR, 1);
+    io.nvm.insert(0x2c, 0x0001);
+    let (_, setup) = run(&mut io, Family::X552, 0x15ac);
+    let setup = setup.unwrap();
+    assert!(matches!(setup, Setup::X552(x552::Setup::Sfp { crosstalk: Some(true), .. })), "{setup:?}");
+    assert_eq!(io.writes_to(FLEX_MNG + 4), [0x5800_0000], "byte address 0x58, big-endian");
+    assert!(io.ops.contains(&Op::Write(SWFW_SYNC, 0x401)), "SW_MNG and EEP held");
+    assert_ne!(io.reg(0x15f0c) & (1 << 9), 0, "FWSTS.FWRI cleared (write 1)");
+    released(&io);
+    // SDP0 is the X552 cage-presence pin.
+    let p = port(Family::X552, 0x15ac, 0);
+    assert_eq!(hardware::wait_link(&mut io, p, Some(&setup), 0).unwrap().link, Link::Down);
+    let esdp = io.reg(ESDP);
+    io.regs.insert(ESDP, esdp | 1);
+    assert_eq!(hardware::wait_link(&mut io, p, Some(&setup), 0).unwrap().link, Link::Up { megabits: Some(10_000) });
+    // Bit 7 set: no fix.
+    let mut io = sfp_port();
+    io.regs.insert(HICR, 1);
+    io.nvm.insert(0x2c, 0x0080);
+    let (_, setup) = run(&mut io, Family::X552, 0x15ac);
+    assert!(matches!(setup, Ok(Setup::X552(x552::Setup::Sfp { crosstalk: Some(false), .. }))));
+    // Host interface disabled, or a command with no valid status: unknown, fix off, not fatal.
+    let mut io = sfp_port();
+    let (_, setup) = run(&mut io, Family::X552, 0x15ac);
+    assert!(matches!(setup, Ok(Setup::X552(x552::Setup::Sfp { crosstalk: None, .. }))));
+    released(&io);
+    let mut io = sfp_port();
+    io.regs.insert(HICR, 1);
+    io.stuck = Some(HICR);
+    let p = port(Family::X552, 0x15ac, 0);
+    assert_eq!(x552::nvm_word(&mut io, p, 0x2c), Err(Error::HostInterface { hicr: 1 }));
+    released(&io);
 }

@@ -146,9 +146,9 @@ pub fn identify<Io: Registers>(io: &mut Io, port: Port) -> R<Module, Io::Error> 
     Ok(m)
 }
 
-/// QSFP+ identification (spec 4.5): identifier 0x0D, 10G compliance at 0x83.
-/// QSFP multispeed is not described beyond "no rate select", so a QSFP
-/// module is run at its one 10G speed.
+/// QSFP+ identification (spec 4.5): identifier 0x0D, 10G compliance at 0x83,
+/// 1G at 0x86. Multispeed is 1G SX with 10G SR, or 1G LX with 10G LR; unlike
+/// SFP+, a DA cable is not.
 pub fn identify_qsfp<Io: Registers>(io: &mut Io, port: Port) -> R<Module, Io::Error> {
     let short = i2c::attempts(port);
     let identifier = or_absent!(byte(io, port, EEPROM, 0, 11));
@@ -170,6 +170,8 @@ pub fn identify_qsfp<Io: Registers>(io: &mut Io, port: Port) -> R<Module, Io::Er
     } else {
         Kind::Unknown
     };
+    let g1 = m.comp_1g;
+    m.multispeed = (g1 & SX != 0 && g10 & SR != 0) || (g1 & LX != 0 && g10 & LR != 0);
     Ok(m)
 }
 

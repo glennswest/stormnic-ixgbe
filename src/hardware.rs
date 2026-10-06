@@ -64,6 +64,9 @@ pub enum Error<E> {
     Cs4227 { register: u16, value: u16 },
     /// No external PHY answered on MDIO.
     NoPhy,
+    /// X552 firmware host interface: disabled (HICR.EN clear), or the
+    /// command did not complete with a valid status (spec 11).
+    HostInterface { hicr: u32 },
     /// PHY soft reset (4.0x0000 bit 15) still set after 3 s (spec 2.6).
     PhyReset,
     /// 82599: the NVM has no init sequence for this module type (spec 5.5).
@@ -338,6 +341,20 @@ pub fn link<Io: Registers>(io: &mut Io, family: Family) -> R<Link, Io::Error> {
     Ok(Link::Up { megabits })
 }
 
+/// LINKS behind the crosstalk fix (spec 4.4, 8.1): when `crosstalk` is on,
+/// an empty cage (82599 SDP2, X552 SDP0 clear) is link down, and "up" is
+/// read again after 5 ms.
+pub fn cage_link<Io: Registers>(io: &mut Io, family: Family, crosstalk: bool) -> R<Link, Io::Error> {
+    let cage = if family == Family::X552 { 1 << 0 } else { 1 << 2 };
+    if crosstalk && read(io, ESDP)? & cage == 0 { return Ok(Link::Down); }
+    let state = link(io, family)?;
+    if crosstalk && state != Link::Down {
+        delay_ms(io, 5);
+        return link(io, family);
+    }
+    Ok(state)
+}
+
 /// How long to wait for link: copper (10GBASE-T AN and training take
 /// seconds) gets the shared code's 9 s; fiber and backplane 3 s (spec 8.1,
 /// 9.1, 9.5).
@@ -368,11 +385,12 @@ pub fn wait_link<Io: Registers>(io: &mut Io, port: Port, setup: Option<&Setup>, 
         Some(Setup::X552(x552::Setup::Copper { phy, internal, .. })) => Some(x552::Watch::new(*phy, *internal)),
         _ => None,
     };
-    let crosstalk = matches!(setup, Some(Setup::F82599(f82599::Setup::Module { crosstalk: true, .. })));
+    let crosstalk = matches!(setup, Some(Setup::F82599(f82599::Setup::Module { crosstalk: true, .. }))
+        | Some(Setup::X552(x552::Setup::Sfp { crosstalk: Some(true), .. })));
     let mut elapsed = 0;
     loop {
         let mut copper = None;
-        let mut state = if crosstalk { f82599::link(io, true)? } else { link(io, port.family)? };
+        let mut state = cage_link(io, port.family, crosstalk)?;
         if let Some(w) = watch.as_mut() {
             let c = w.poll(io, port)?;
             // Spec 7.8.6: up only when LINKS and the X557 both say so.

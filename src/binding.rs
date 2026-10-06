@@ -764,13 +764,18 @@ fn log_x552(at: &impl core::fmt::Display, dev: u16, setup: &x552::Setup) {
         x552::Setup::ManageabilityVeto => println!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware"
         ),
-        x552::Setup::Sfp { module: ref m, link_ctrl: Some(lc1), edc: Some(edc), speed, rate_select, .. } => println!(
-            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}, KR PHY {} (LINK_CTRL_1 {lc1:08x}), CS4227 EDC {}{}{}",
+        x552::Setup::Sfp { module: ref m, link_ctrl: Some(lc1), edc: Some(edc), speed, rate_select, crosstalk, .. } => println!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}, KR PHY {} (LINK_CTRL_1 {lc1:08x}), CS4227 EDC {}{}{}{}",
             module(m),
             if lc1 & (1 << 18) != 0 { "10G" } else { "1G" },
             if edc == 2 { "CX1" } else { "SR" },
             match speed { Some(10_000) => ", multispeed: link at 10G", Some(_) => ", multispeed: link at 1G", None => "" },
-            if rate_select { "" } else { ", soft rate select failed" }
+            if rate_select { "" } else { ", soft rate select failed" },
+            match crosstalk {
+                Some(true) => ", cage-presence check on",
+                Some(false) => "",
+                None => ", NVM word 0x2C unreadable (host interface), cage-presence check off",
+            }
         ),
         x552::Setup::Sfp { module: ref m, .. } => println!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: module {}{}",

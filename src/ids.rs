@@ -4,9 +4,10 @@
 //! Device IDs from the Intel datasheets (82599 10 GbE Controller Datasheet,
 //! X540 Datasheet, Xeon D-1500 / X552 datasheet), the PCI ID registry for
 //! board variants, and docs/spec/phy.md 1.2, which lists 26 physical
-//! functions. 25 are here. 82599_LS (154f) is left out: the shared code has
-//! no MAC type for it and its identification path is unclear (spec 10
-//! item 2). Virtual functions (82599 10ed, 152e; X540 1515, 1530; X552
+//! functions; all 26 are here. 82599_LS (154f) is missing from the shared
+//! code's MAC-type table, but its media type (`fiber_lco`) gives it the
+//! backplane path, and Linux binds it as an 82599 (spec 10 item 2, #16).
+//! Virtual functions (82599 10ed, 152e; X540 1515, 1530; X552
 //! 15a8, 15a9) are not listed: a VF has no PHY access and must not be bound.
 
 pub const INTEL: u16 = 0x8086;
@@ -37,6 +38,7 @@ pub const SUPPORTED: &[Nic] = &[
     Nic { device: 0x152a, name: "82599 backplane FCoE", family: Family::F82599 },
     Nic { device: 0x154a, name: "82599 SFP+ quad", family: Family::F82599 },
     Nic { device: 0x154d, name: "82599 SFP+ SF2", family: Family::F82599 },
+    Nic { device: 0x154f, name: "82599 LS", family: Family::F82599 },
     Nic { device: 0x1557, name: "82599EN SFP+", family: Family::F82599 },
     Nic { device: 0x1558, name: "82599 QSFP+", family: Family::F82599 },
     Nic { device: 0x155d, name: "82599 bypass", family: Family::F82599 },
