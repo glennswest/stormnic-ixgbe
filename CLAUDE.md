@@ -50,7 +50,7 @@ place of iPXE's NIC drivers. Making it the default is #5 (stormbootx#27).
 
 ## Test
 
-`sc-build scripts/test-hardware.sh` runs the simulated tests (84 at 563ea8d).
+`sc-build scripts/test-hardware.sh` runs the simulated tests (89 at 38d6f0c).
 On metal: file a stormbootx issue to pin the new commit and build the
 rustnic golden, propose this issue after it, and the master boots a blade
 from that golden (it holds the BMC and console access). The Intel test
@@ -132,5 +132,6 @@ traffic). The first boot after the parts arrive is #26's cold-start check
   - **Done (#16 closed), 2026-10-06, 24d36bb (code) + 499a13e (docs, spec section 11).** sc-build: 88 tests (4 new) at 24d36bb; subsystem-11 check at 499a13e (99,328 bytes, no driver warnings). Not verified on hardware: no 154f, QSFP+ or X552 machine.
 - [ ] 82599 link from a link-down start (LNK_RST path) never came up on server3 (#26): 10 boots 2026-10-02..03 at 563ea8d, `reset (LNK_RST, link was down)` then `link down after 3000 ms`, module (passive DA) detected each time; only the link-already-up `RST` boot is verified. Owner (stormbootx#81, 2026-10-02): Intel PHY/cable problem, fixed when parts come in. server3 is off the network since 2026-10-03.
   - **In progress, 2026-10-06.** Nothing to test on metal until the parts arrive. Code review of the LNK_RST + multispeed path against spec 5.7, 5.8, 5.13 found no difference. So that the next cold boot can tell a cable from the driver: when the link stays down, Start logs the raw LINKS, AUTOC, AUTOC2 and ESDP (the PMD signal-detect and PCS sync fields say whether the far end is seen), and the multispeed loop logs `multispeed: no link at 10G or 1G` instead of nothing. Docs: cold-start check in docs/bring-up.md "Hardware checks"; Test section here says server3's Intel port can't run metal checks until then. stormbootx-ipxe is gone (stormbootx v0.17.0), so the cable comparison is Linux's ixgbe on the same port. Then propose #26 after the parts (needs-owner question if no issue tracks them).
+  - **Done in code, 2026-10-06, 3981489 (code) + 38d6f0c (test fix), docs c5bce2d.** sc-build at 38d6f0c: 89 tests (1 new: `x82599_da_from_a_dead_link_tries_10g_1g_10g_and_reports_the_registers`) + subsystem-11 check (100,352 bytes, no driver warnings). Filed stormbootx#101 to pin 38d6f0c on the rustnic media. No issue tracks the parts, so the cold-start check waits on the owner (question on #26, `needs-owner`). Left: the cold boot of server3 after the parts are fitted (docs/bring-up.md item 9).
 - [ ] Retire `ipxe-intelx.efi` from the stormbootx media (#5, stormbootx#27)
 - [x] Docs refreshed from the code (2026-10-04): stormbootx's smoltcp-on-SNP path, how the driver ships (pinned, `.efi.off` / rustnic media), server3 results; closes #10, #18, #25.
