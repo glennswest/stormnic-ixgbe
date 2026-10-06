@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-10-06
+- **docs:** Work plan: #16 done; sc-build 88 tests at 24d36bb, subsystem-11 check at 499a13e.
 - **feat:** #16, the gaps left after #13 against the all-IDs decision, closed from Intel's BSD shared code (none declined):
   - **154f (82599_LS) is bound** (26 device IDs). The shared code's media type for it, `fiber_lco`, means no module ID, laser or rate select and no multispeed, so it runs the NVM AUTOC through `setup_mac_link` like a backplane (`Media::Lco`).
   - **X552 crosstalk fix:** new `x552::nvm_word` reads NVM words through the firmware host interface (FLEX_MNG command 0x31, HICR.C/SV, FWSTS.FWRI, under SW_MNG + EEP). 15ac reads word 0x2C after the reset; with bit 7 clear an empty cage (ESDP SDP0) is link down, in the multispeed polls and the link wait. An unreadable word is logged and leaves the check off.
