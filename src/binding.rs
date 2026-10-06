@@ -630,7 +630,12 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
     match w.link {
         Link::Up { megabits: Some(mb) } => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link up {mb} Mb/s"),
         Link::Up { megabits: None } => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link up, speed encoding reserved"),
-        Link::Down => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: link down after {budget} ms"),
+        Link::Down => {
+            let [links, autoc, autoc2, esdp] = hardware::link_registers(&mut io)?;
+            println!(
+                "stormnic-ixgbe: {at} 8086:{dev:04x}: link down after {budget} ms (LINKS {links:08x}, AUTOC {autoc:08x}, AUTOC2 {autoc2:08x}, ESDP {esdp:08x})"
+            );
+        }
     }
     Ok((id.mac, w.link))
 }
@@ -737,7 +742,13 @@ fn log_82599(at: &impl core::fmt::Display, dev: u16, setup: &f82599::Setup) {
                 if rate_select { "" } else { ", soft rate select failed" }
             );
             if let Some(v) = fw { println!("stormnic-ixgbe: {at} 8086:{dev:04x}: SFI firmware patch version {v:#x}{}", if v > 5 { "" } else { " (expected > 5)" }); }
-            if let Some(mb) = speed { println!("stormnic-ixgbe: {at} 8086:{dev:04x}: multispeed: link at {mb} Mb/s"); }
+            match speed {
+                Some(mb) => println!("stormnic-ixgbe: {at} 8086:{dev:04x}: multispeed: link at {mb} Mb/s"),
+                None if m.multispeed || f82599::media(dev) == f82599::Media::FiberFixed => println!(
+                    "stormnic-ixgbe: {at} 8086:{dev:04x}: multispeed: no link at 10G or 1G; left at 10G"
+                ),
+                None => {}
+            }
         }
         f82599::Setup::Copper { phy, id, advertised, restarted, .. } => println!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: link setup: {} PHY {id:08x} at MDIO {phy}, advertising {}, {}",

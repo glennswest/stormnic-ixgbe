@@ -355,6 +355,14 @@ pub fn cage_link<Io: Registers>(io: &mut Io, family: Family, crosstalk: bool) ->
     Ok(state)
 }
 
+/// LINKS, AUTOC, AUTOC2 and ESDP as they are, for the console when the link
+/// stays down (#26): the PMD signal-detect and PCS sync fields of LINKS say
+/// whether anything is heard from the far end, AUTOC/AUTOC2 the mode left
+/// programmed, ESDP the SDP pins (laser, cage presence, rate select).
+pub fn link_registers<Io: Registers>(io: &mut Io) -> R<[u32; 4], Io::Error> {
+    Ok([read(io, LINKS)?, read(io, AUTOC)?, read(io, AUTOC2)?, read(io, ESDP)?])
+}
+
 /// How long to wait for link: copper (10GBASE-T AN and training take
 /// seconds) gets the shared code's 9 s; fiber and backplane 3 s (spec 8.1,
 /// 9.1, 9.5).

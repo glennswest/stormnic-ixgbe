@@ -594,6 +594,24 @@ fn x82599_da_is_multispeed_with_hard_rate_select_and_a_laser_flap() {
     assert!(io.writes_to(ESDP).iter().filter(|v| *v & (1 << 3) != 0).count() >= 1, "flap: laser off once");
 }
 #[test]
+fn x82599_da_from_a_dead_link_tries_10g_1g_10g_and_reports_the_registers() {
+    // server3 since 2026-10-02 (#26): link down at Start, so LNK_RST, and the
+    // passive DA never comes up. The port is left at 10G SFI with the laser
+    // on, and the link registers are there for the console line.
+    let mut io = x82599(0, sfp(&[(8, 0x04)]));
+    let (_, setup) = run(&mut io, Family::F82599, 0x1557);
+    assert_eq!(io.writes_to(0)[0] & ((1 << 26) | 8), 8, "LNK_RST");
+    let Setup::F82599(f82599::Setup::Module { module, speed, autoc, .. }) = setup.unwrap() else { panic!() };
+    assert_eq!((module.kind, module.multispeed, speed), (Kind::DaCu, true, None));
+    assert_eq!((autoc >> 13) & 7, 3, "left at 10G SFI");
+    let lms: Vec<u32> = io.writes_to(AUTOC).iter().map(|v| (v >> 13) & 7).collect();
+    assert!(lms.windows(2).any(|w| w == [2, 3]), "1G tried, then 10G again: {lms:?}");
+    assert_eq!(io.reg(ESDP) & (1 << 3), 0, "laser on");
+    let regs = hardware::link_registers(&mut io).unwrap();
+    assert_eq!(regs, [io.reg(LINKS), io.reg(AUTOC), io.reg(AUTOC2), io.reg(ESDP)]);
+    assert_eq!(regs[0] & (1 << 30), 0);
+}
+#[test]
 fn x82599_1g_module_moves_sfi_to_1g_with_an() {
     let mut io = x82599(0, sfp(&[(6, 0x01)]));
     let (_, setup) = run(&mut io, Family::F82599, 0x10fb);
