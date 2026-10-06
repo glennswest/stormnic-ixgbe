@@ -586,6 +586,10 @@ fn fatal(e: &Error<Status>) -> bool { matches!(e, Error::Io(_) | Error::Removed)
 fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result::Result<([u8; 6], Link, String), Error<Status>> {
     let mut io = Bar0(pci);
     let (at, dev) = (at(location), nic.device);
+    // First, so it is on the console even if a later step hangs (#17).
+    if let Some(warning) = hardware::simulation_only(nic.family) {
+        say!("stormnic-ixgbe: {at} 8086:{dev:04x}: {warning}");
+    }
     let lan = hardware::begin(&mut io)?;
     let port = Port { family: nic.family, device: dev, lan };
     let veto = hardware::veto(&mut io)?;

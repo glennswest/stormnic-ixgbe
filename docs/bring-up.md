@@ -9,7 +9,9 @@ See [PHY and link programming per the spec](#phy-and-link-programming-per-the-sp
 which supersedes the earlier 82599/X540 datasheet link setup and the first
 X552 implementation described further down. The 82599 SFP+ path has run
 on hardware (server3, 8086:1557, 2026-10-01: 10G SFI link on a passive DA
-cable); the X540 and X552 paths have not. See
+cable). The X540 and X552 paths have not; they ship verified in simulation
+only (owner, #15), and Start prints `X540/X552 path: verified in simulation
+only` before any PHY or link step when one runs (#17). See
 [Hardware checks](#hardware-checks-spec-section-10).
 
 ## PHY and link programming per the spec (#13, 2026-09-29)

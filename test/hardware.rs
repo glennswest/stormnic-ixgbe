@@ -1,5 +1,8 @@
 #[path = "../src/hardware.rs"]
 mod hardware;
+#[path = "../src/ids.rs"]
+#[allow(dead_code)]
+mod ids;
 use hardware::f82599::{self, Laser, PhyReset};
 use hardware::mdio::Speeds;
 use hardware::sfp::Kind;
@@ -1128,4 +1131,17 @@ fn x552_sfp_reads_the_crosstalk_word_through_the_host_interface() {
     let p = port(Family::X552, 0x15ac, 0);
     assert_eq!(x552::nvm_word(&mut io, p, 0x2c), Err(Error::HostInterface { hicr: 1 }));
     released(&io);
+}
+
+#[test]
+fn x540_and_x552_ids_warn_simulation_only_and_82599_ids_do_not() {
+    let warning = Some("X540/X552 path: verified in simulation only");
+    for nic in ids::SUPPORTED {
+        let expected = if nic.family == Family::F82599 { None } else { warning };
+        assert_eq!(hardware::simulation_only(nic.family), expected, "8086:{:04x} {}", nic.device, nic.name);
+    }
+    for (device, family) in [(0x1557, Family::F82599), (0x1528, Family::X540), (0x15ad, Family::X552)] {
+        assert_eq!(ids::lookup(ids::INTEL, device).map(|n| n.family), Some(family), "8086:{device:04x}");
+    }
+    assert_eq!(hardware::simulation_only(Family::F82599), None);
 }

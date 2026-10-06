@@ -363,6 +363,16 @@ pub fn link_registers<Io: Registers>(io: &mut Io) -> R<[u32; 4], Io::Error> {
     Ok([read(io, LINKS)?, read(io, AUTOC)?, read(io, AUTOC2)?, read(io, ESDP)?])
 }
 
+/// The console warning for a path verified in simulation only (owner's
+/// decision on #15, #17): the X540 and X552 paths have run only against the
+/// simulated devices in test/hardware.rs; the 82599 path is verified on metal.
+pub fn simulation_only(family: Family) -> Option<&'static str> {
+    match family {
+        Family::F82599 => None,
+        Family::X540 | Family::X552 => Some("X540/X552 path: verified in simulation only"),
+    }
+}
+
 /// How long to wait for link: copper (10GBASE-T AN and training take
 /// seconds) gets the shared code's 9 s; fiber and backplane 3 s (spec 8.1,
 /// 9.1, 9.5).

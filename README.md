@@ -32,8 +32,12 @@ binds, 26 device IDs:
 | Family | Device IDs |
 |---|---|
 | 82599 | 10f7, 10f8, 10f9, 10fb (SFP+), 10fc, 1507, 1514, 1517, 151c (10GBASE-T), 1529, 152a, 154a, 154d, 154f (LS), 1557, 1558 (QSFP+), 155d (bypass) |
-| X540 | 1528 (X540-T), 1560 (X540-T1), 155c (bypass) |
-| X552 (Xeon D-1500) | 15aa (KX4), 15ab (KR), 15ac (SFP+), 15ad (X552/X557-AT), 15ae (1000BASE-T), 15b0 (XFI) |
+| X540 (simulation only) | 1528 (X540-T), 1560 (X540-T1), 155c (bypass) |
+| X552 (Xeon D-1500; simulation only) | 15aa (KX4), 15ab (KR), 15ac (SFP+), 15ad (X552/X557-AT), 15ae (1000BASE-T), 15b0 (XFI) |
+
+The X540 and X552 paths have run only against the simulated devices in
+`test/hardware.rs`; no lab machine has those chips. The owner chose to ship
+them anyway (#15), and Start prints a warning when one runs (#17).
 
 It only binds a function whose class code is network (0x02). Virtual
 functions (82599 10ed, 152e; X540 1515, 1530; X552 15a8, 15a9) are
@@ -248,6 +252,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X552 list; not binding` | Supported (and Start), unlisted Intel NIC | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: Supported` | Supported, will bind | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: already driven by another driver (STATUS); leaving it` | Supported, a platform driver owns it | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: X540/X552 path: verified in simulation only` | Start, an X540 or X552 ID: the first bring-up line, once per Start (#15, #17) | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: manageability veto (MMNGC.MNG_VETO): no PHY reset, AN restart or link-mode write` | Start, manageability owns the link | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: PHY/module check failed: ERROR; link left to hardware, reporting LINKS only` | Start, a step before the reset failed (e.g. `Semaphore { held: .. }`, `NoPhy`, `I2c { .. }`, `Cs4227 { .. }`, `PhyReset`) | always, after the kept steps |
 | `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N, reset\|not reset (veto)\|not reset (over-temperature alarm)` | Start, 82599 151c (PHY `TN1010`) | always with the over-temperature alarm, else verbose |
@@ -328,7 +333,8 @@ bring-up and PHY (including a bit-level I2C slave for the SFP+ EEPROM, port
 expander and CS4227), rings, SNP and PCI decode.
 
 Not verified on hardware:
-- the X540 and X552 paths: no lab hardware (#15, #17, #23);
+- the X540 and X552 paths: no lab hardware (#15, #23). Start says so on the
+  console when one runs (#17);
 - 154f, QSFP+ (1558) and the X552 host-interface NVM read (#16): no lab
   hardware;
 - Start's DMA check: on server3 it sent its frame but received nothing in
