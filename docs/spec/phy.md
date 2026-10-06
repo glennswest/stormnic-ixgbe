@@ -31,7 +31,9 @@ read that driver and did not write any of it.
   reader can check it.
 - **Addendum:** section 11 was added on 2026-10-06 (#16) by the driver's
   maintainers, not by this document's author, from the same shared code at
-  a later commit. Sections 1.2, 4.4, 4.5 and 10 point to it.
+  a later commit. Sections 1.2, 4.4, 4.5 and 10 point to it. Section 12
+  (2026-10-06, #23), by the maintainers too, brings the X550 and the X553
+  into scope; the scope line above describes the original document.
 
 ## Conventions
 
@@ -1941,6 +1943,321 @@ read, including those inside the multispeed loop.
 **Source:** `ixgbe_common.c` `ixgbe_start_hw_generic`,
 `ixgbe_need_crosstalk_fix`, `ixgbe_check_mac_link_generic`.
 
+## 12. Addendum (#23, 2026-10-06): X550 and X553
+
+Added by the driver's maintainers, as section 11 was, to cover the X550
+(`ixgbe_mac_X550`) and the X553 (`ixgbe_mac_X550EM_a`, the Atom C3000
+integrated MAC). Same rules: register layouts and sequences from Intel's
+BSD-3-Clause shared code, FreeBSD `sys/dev/ixgbe/` at commit `32b8381d711c`
+(2026-09-18); no code reproduced. Nothing here has run on hardware (#23:
+owner's decision, simulation only).
+
+### 12.1 Device IDs
+
+| ID | Name | MAC type | Media | Path |
+|---|---|---|---|---|
+| `0x1563` | X550-T2 | X550 | copper | 12.3 |
+| `0x15D1` | X550-T1 | X550 | copper | 12.3 |
+| `0x15C2` | X553 KR | X550EM_a | backplane | 12.8 |
+| `0x15C3` | X553 L KR | X550EM_a | backplane | 12.8, 1G only |
+| `0x15C4` | X553 N SFP+ | X550EM_a | fiber | 12.11 |
+| `0x15C6` | X553 SGMII | X550EM_a | backplane (SGMII) | 12.9 |
+| `0x15C7` | X553 L SGMII | X550EM_a | backplane (SGMII) | 12.9 |
+| `0x15C8` | X553/X557-AT 10GBASE-T | X550EM_a | copper | 12.12 |
+| `0x15CE` | X553 SFP+ | X550EM_a | fiber | 12.11 |
+| `0x15E4` | X553 1GbE | X550EM_a | copper, firmware PHY | 12.10 |
+| `0x15E5` | X553 L 1GbE | X550EM_a | copper, firmware PHY | 12.10 |
+
+Virtual functions, never bound: X550 `0x1564`, `0x1565`; X553 `0x15B4`,
+`0x15C5`.
+
+**QSFP+ (`0x15CA`, `0x15CC`):** the shared code names them and gives them
+fiber media, but it has no module path for them: the PHY identification
+leaves the module type unknown, and the SFP link setup then refuses the
+unknown type, so no link is ever set up. Neither the PCI ID registry nor
+Linux's ixgbe lists them. A driver following the shared code would bind them
+and do nothing; this driver does not bind them.
+
+### 12.2 Registers that move on the X553
+
+The X553 has its own copies of some global registers ("BY_MAC" in the
+shared code). Those this document uses:
+
+| Register | 82599/X540/X550/X552 | X553 |
+|---|---|---|
+| SWSM | `0x10140` | `0x15F70` |
+| SW_FW_SYNC | `0x10160` | `0x15F78` |
+| EEC | `0x10010` | `0x15FF8` |
+| I2CCTL | `0x15F5C` on X550/X552 (3.1 X552 layout) | `0x15F5C`, the same layout |
+
+Bit layouts are unchanged. The semaphore protocol is the X540 one (1.4.3)
+with the X552's 1000 attempts, which apply to the X550 too (every MAC type
+from the X550 on).
+
+### 12.3 X550 (0x1563, 0x15D1): the X540 path with 2.5G and 5G
+
+The X550 is set up by the X540 operations (section 6), with these
+differences:
+
+1. **PHY ID** `0x01540220` (revision nibble masked; the shared code's other
+   two X550 IDs differ only in that nibble).
+2. **NVM** is read through the host interface (11.2); the MAC reset (6.7)
+   and the MAC address from RAL0/RAH0 are as on the X540.
+3. **Speeds:** what 1.0x0004 reports (6.4), plus 2.5G and 5G always.
+4. **Advertisement** (6.5) also sets 7.0xC400 bit 10 (2.5GBASE-T) and bit 11
+   (5GBASE-T), in the same read-modify-write as the 1G bit (bit 15). On the
+   other MAC types the shared code leaves bits 10 and 11 as they are.
+5. **LINKS** (8.1): speed `11` with NON_STD (bit 27) set is 2.5G, and speed
+   `01` with NON_STD set is 5G.
+
+**Source:** `ixgbe_x550.c` `ixgbe_init_ops_X550`; `ixgbe_x540.c`
+`ixgbe_init_ops_X540`, `ixgbe_reset_hw_X540`; `ixgbe_phy.c`
+`ixgbe_get_copper_speeds_supported`, `ixgbe_setup_phy_link_generic`;
+`ixgbe_common.c` `ixgbe_check_mac_link_generic`.
+
+### 12.4 Host-interface commands (X550, X552, X553)
+
+Section 11.2 is one host-interface command. In general:
+
+1. Take SW_FW_SYNC `SW_MNG` (bit 10).
+2. FWSTS bit 9 (FWRI) written 1; HICR bit 0 (EN) must be set.
+3. The command block, a multiple of 4 bytes, is written as little-endian
+   dwords to FLEX_MNG (`0x15800` + 4·i). Its first dword is the header:
+   byte 0 command, byte 1 buffer length (bytes after the header), byte 2
+   reserved (0), byte 3 checksum (always `0xFF`).
+4. HICR bit 1 (C) set; C polled until clear for up to 500 ms; then HICR bit 2
+   (SV) must be set.
+5. The response overwrites the block: its header dword is read back from
+   FLEX_MNG dword 0, byte 2 is the **return status**, byte 1 the response
+   length; dwords 1 to ⌈length/4⌉ follow. A response longer than the
+   caller's block is an error.
+6. Release `SW_MNG`.
+
+Fields marked big-endian in the command structures are byte-swapped within
+their dword before being written; little-endian ones are not.
+
+**Source:** `ixgbe_common.c` `ixgbe_hic_unlocked`,
+`ixgbe_host_interface_command`; `ixgbe_type.h` `struct ixgbe_hic_hdr`,
+`IXGBE_HI_COMMAND_TIMEOUT`, `FW_DEFAULT_CHECKSUM`.
+
+### 12.5 X553 PHY token (shared MDIO)
+
+The X553's two ports share one MDIO bus with the firmware. Every MDIO access
+on the X553 (12.12, 12.11 for 0x15CE) takes, in this order, the port's
+SW_FW_SYNC PHY bit (1.4.1) and then the **PHY token** from the firmware;
+it gives them back in the opposite order.
+
+- **Request:** command `0x0A`, length 2: dword 1 is byte 0 port number
+  (LAN ID), byte 1 `0` (request) or `1` (release), bytes 2–3 zero.
+- **Status** (12.4 step 5): `0x01` granted (or released); `0x80` busy, try
+  again; anything else is an error.
+- **Retries:** busy is retried for up to 5 s, 5 ms apart
+  (`FW_PHY_TOKEN_WAIT`, `FW_PHY_TOKEN_DELAY`). This driver gives back the
+  SW_FW_SYNC bits between tries, so that the firmware is not kept from the
+  semaphore while it holds the token.
+
+The token is a software bit (SW_FW_SYNC bit 30 in the shared code's masks)
+that never reaches the register.
+
+**Source:** `ixgbe_x550.c` `ixgbe_get_phy_token`, `ixgbe_put_phy_token`,
+`ixgbe_acquire_swfw_sync_X550a`, `ixgbe_release_swfw_sync_X550a`,
+`ixgbe_read_phy_reg_x550a`, `ixgbe_write_phy_reg_x550a`; `ixgbe_type.h`
+`FW_PHY_TOKEN_*`, `IXGBE_GSSR_TOKEN_SM`.
+
+### 12.6 X553 firmware PHY activities (0x15E4, 0x15E5)
+
+The 1G copper devices' PHY is run by the firmware. Software asks for an
+activity:
+
+- **Request:** command `0x05`, length 20. Dword 1: byte 0 port number, byte 1
+  zero, bytes 2–3 the activity ID (little-endian). Dwords 2–5: four data
+  words, each big-endian.
+- **Response:** status `0x01` is success, and dwords 1–4 hold four
+  big-endian data words. Any other status is retried, 20 µs apart, 50 times
+  in all, then fails.
+
+| Activity | ID | Data in | Data out |
+|---|---|---|---|
+| INIT_PHY | 1 | – | – |
+| SETUP_LINK | 2 | word 0: speed bits (below), pause 17:16, LP 18, HP 19, EEE 20, AN 22 | word 0 bit 0: the PHY was shut down (over-temperature) |
+| GET_LINK_INFO | 3 | – | word 0 bit 25: over-temperature |
+| FORCE_LINK_DOWN | 4 | word 0 bit 0: off | – |
+| PHY_SW_RESET | 5 | – | – |
+| GET_PHY_INFO | 7 | – | word 0 bits 11:0 speeds, 31:16 PHY ID high; word 1 bits 15:0 PHY ID low (revision in 3:0) |
+
+Speed bits: 10M bit 0, 100M bit 1, 1G bit 2, 2.5G bit 3, 5G bit 4, 10G
+bit 5. A PHY ID of 0 or with only the revision nibble set is invalid.
+
+**Source:** `ixgbe_x550.c` `ixgbe_fw_phy_activity`, `ixgbe_get_phy_id_fw`,
+`ixgbe_setup_fw_link`, `ixgbe_reset_phy_fw`, `ixgbe_check_overtemp_fw`,
+`ixgbe_shutdown_fw_phy`; `ixgbe_type.h` `FW_PHY_ACT_*`,
+`struct ixgbe_hic_phy_activity_req/resp`.
+
+### 12.7 X553 internal PHY: two more KR PHY registers
+
+The X553's integrated PHY is reached over the IOSF sideband as on the X552
+(7.2, target 0, port 1 at +0x4000). Besides LINK_CTRL_1 (7.3):
+
+- **PMD_FLX_MASK_ST20** (`0x5054`): bits 21:20 SFI 10G mode (0 DA, 1 SR,
+  2 LR), 25 SGMII enable, 26 clause-37 AN enable, 27 AN enable, 30:28 speed
+  (1 100M, 2 1G, 3 10G, 4 AN, 7 2.5G), 31 **FW_AN_RESTART**.
+- **SGMII_CTRL** (`0x42A0`): bit 12 force 100M, bit 19 force 10M (MAC
+  target).
+- LINK_CTRL_1 also has bit 12 SGMII enable and bit 13 clause-37 AN enable.
+
+**AN restart on the X553** (`restart_an_internal_phy`): LINK_CTRL_1 bit 31
+as on the X552 (7.4 step 4), then PMD_FLX_MASK_ST20 bit 31 set, to tell the
+firmware the restart was asserted.
+
+**KR speed setup on the X553** (7.4, `setup_kr_speed`): after the
+LINK_CTRL_1 advertisement write, PMD_FLX_MASK_ST20 speed field = 4 (AN),
+AN enable (27) set, clause-37 (26) and SGMII (25) clear; then the AN restart
+above.
+
+**Source:** `ixgbe_x550.c` `ixgbe_restart_an_internal_phy_x550em`,
+`ixgbe_setup_kr_speed_x550em`; `ixgbe_type.h` `IXGBE_KRM_*`.
+
+### 12.8 X553 KR (0x15C2, 0x15C3)
+
+1. NW_MNG_IF_SEL (`0x11178`) bit 20 (PHY speed 2.5G) set: the backplane runs
+   at 2.5G and the link is left alone.
+2. Otherwise, unless the manageability veto (1.5) is set: KR speed setup
+   (12.7) advertising KR + KX, or **KX only on 0x15C3** (the "L" part is
+   1G only).
+
+**Source:** `ixgbe_x550.c` `ixgbe_setup_kr_x550em`,
+`ixgbe_get_link_capabilities_X550em`.
+
+### 12.9 X553 SGMII (0x15C6, 0x15C7)
+
+The internal PHY runs SGMII to an external 1G PHY; MDIO uses the slow clock
+(2.4). Link setup:
+
+1. LINK_CTRL_1: AN enable (29) and the force-speed field (10:8) cleared;
+   SGMII enable (12), clause-37 enable (13) and force 1G (`2` in 10:8) set.
+2. SGMII_CTRL: force 10M (19) and force 100M (12) set.
+3. PMD_FLX_MASK_ST20: speed field = 2 (1G), AN enable (27) clear, SGMII (25)
+   and clause-37 (26) set.
+4. AN restart (12.7).
+
+The shared code does not check the manageability veto here; this driver
+does (1.5 applies to every link write). The external PHY is not touched.
+
+**Source:** `ixgbe_x550.c` `ixgbe_setup_sgmii`,
+`ixgbe_init_mac_link_ops_X550em`, `ixgbe_set_mdio_speed`.
+
+### 12.10 X553 1G copper, firmware PHY (0x15E4, 0x15E5)
+
+MDIO is set to the **fast** clock (HLREG0 bit 16 set) before and after the
+MAC reset. The MAC reset holds the port's PHY bit.
+
+1. **Identify** (before the reset): GET_PHY_INFO (12.6); the speeds it
+   reports are what is advertised.
+2. **PHY reset** (before the MAC reset), unless vetoed: PHY_SW_RESET, then
+   INIT_PHY, then SETUP_LINK (step 4's request).
+3. **Internal link** (after the reset): LINK_CTRL_1 AN enable and force
+   speed cleared, SGMII (12) and clause-37 (13) set, force 1G clear;
+   SGMII_CTRL force 10M and 100M cleared; LINK_CTRL_1 written again;
+   PMD_FLX_MASK_ST20 speed field = 4 (AN), AN enable clear, SGMII and
+   clause-37 set; AN restart (12.7).
+4. **SETUP_LINK** with the speeds, HP (19) and AN (22). The shared code also
+   asks for full pause (17:16 = 3) and EEE at 100M and 1G; this driver asks
+   for neither (no flow control, no EEE). Response bit 0 set: the PHY is
+   down for over-temperature.
+5. **Over-temperature check:** GET_LINK_INFO word 0 bit 25 set means the
+   firmware PHY is over temperature; the shared code then forces the link
+   down (FORCE_LINK_DOWN with bit 0).
+
+LINKS speed `00` with link up is 10M on these two devices.
+
+**Source:** `ixgbe_x550.c` `ixgbe_identify_phy_fw`,
+`ixgbe_init_phy_ops_X550em`, `ixgbe_reset_hw_X550em`, `ixgbe_reset_phy_fw`,
+`ixgbe_setup_sgmii_fw`, `ixgbe_setup_fw_link`, `ixgbe_check_overtemp_fw`,
+`ixgbe_set_mdio_speed`; `ixgbe_common.c` `ixgbe_check_mac_link_generic`.
+
+### 12.11 X553 SFP+ (0x15C4 "N", 0x15CE)
+
+Both: SDP setup as on the X552 (7.7.1 `setup_mux_ctl`: SDP0 an input; on
+port 1 SDP1 a GPIO output), module identification as on the X552 (7.7.3,
+7.7.4, the same supported list, no 1G-T), soft rate select and the
+multispeed algorithm (7.7.5, 5.8) with no laser control, and the crosstalk
+fix from NVM word 0x2C read through the host interface (11.4; cage pin
+SDP0). There is **no I2C mux** on the X553: the semaphore functions do not
+drive SDP1. The MAC reset holds the shared-I2C mask (1.4.1), plus the port's
+PHY bit on 0x15CE.
+
+Per-speed setup (`setup_mac_link`):
+
+- **0x15C4 (native SFI, no retimer):**
+  1. PMD_FLX_MASK_ST20: bits 21:20 cleared (DA), then bit 20 set (SR) for
+     any module that is not passive DA.
+  2. PMD_FLX_MASK_ST20: AN enable, clause-37 and SGMII cleared; speed field
+     3 (10G) or 2 (1G).
+  3. AN restart (12.7), which also resets the port.
+- **0x15CE (external CS4227 or CS4223 on MDIO):** MDIO uses the slow clock
+  and the PHY token (12.5); the retimer's address is NW_MNG_IF_SEL bits 7:3
+  and must not be 0.
+  1. KR speed setup (12.7) advertising only the speed being tried (KR for
+     10G, KX for 1G), with no veto check, as on the X552.
+  2. Clause-45 device 0 register `0x019F` (EFUSE_PDF_SKU): `0x0010` is the
+     quad-port CS4223, otherwise the dual-port CS4227.
+  3. The register slice: LAN ID << 12 for the CS4227; for the CS4223,
+     (LAN ID + 2 × instance) << 12, where the instance is NVM word `0x45`
+     bit 4 (read through the host interface).
+  4. Device 0 register `0x12B0` + slice: read, clear bits 3:2, set the EDC
+     mode (CX1 `0x2` for passive DA, SR `0x4` otherwise) shifted left by 1,
+     with bit 0 set; write; read again to flush.
+
+**Source:** `ixgbe_x550.c` `ixgbe_init_phy_ops_X550em`,
+`ixgbe_identify_phy_x550em`, `ixgbe_init_mac_link_ops_X550em`,
+`ixgbe_setup_mac_link_sfp_x550a`, `ixgbe_setup_sfi_x550a`,
+`ixgbe_acquire_swfw_sync_X550a`, `ixgbe_set_mdio_speed`; `ixgbe_common.c`
+`ixgbe_set_lan_id_multi_port_pcie`, `ixgbe_need_crosstalk_fix`;
+`ixgbe_phy.h` `IXGBE_CS4227_*`, `IXGBE_CS4223_SKU_ID`; `ixgbe_type.h`
+`IXGBE_EEPROM_CTRL_4`, `IXGBE_EE_CTRL_4_INST_ID`.
+
+### 12.12 X553 10GBASE-T (0x15C8)
+
+The X557 as on the X552 (7.8), with these differences:
+
+1. MDIO under the PHY bit and the PHY token (12.5); slow clock before and
+   after the MAC reset.
+2. The PHY address: NW_MNG_IF_SEL bits 7:3 when the register is non-zero
+   (2.5).
+3. The internal link is always **KR** (NW_MNG_IF_SEL bit 24 is an X552-only
+   field): no iXFI step in link setup; on a copper link change the internal
+   PHY is set to KR AN with KR + KX (12.7), as the X552 in KR mode does
+   (7.8.6).
+4. The shared code's link check for the X553 is LINKS alone; it does not
+   also read the X557's AN status. This driver requires both, as on the
+   X552.
+
+**Source:** `ixgbe_x550.c` `ixgbe_identify_phy_x550em`,
+`ixgbe_read_mng_if_sel_x550em`, `ixgbe_init_ext_t_x550em`,
+`ixgbe_setup_mac_link_t_X550em`, `ixgbe_setup_internal_phy_t_x550em`,
+`ixgbe_init_mac_link_ops_X550em`; `ixgbe_phy.c`
+`ixgbe_identify_phy_generic`, `ixgbe_get_copper_speeds_supported` (no 100M
+on the X550EM types).
+
+### 12.13 X553 MAC reset
+
+As the X552's (7.11): CTRL.LNK_RST when the link is down, CTRL.RST when it
+is up, under the device's semaphore mask (12.10, 12.11; the PHY bit on
+0x15C8; nothing on the KR and SGMII devices), 50 ms; the EEC used for the
+NVM-done check is at `0x15FF8` (12.2); after the reset, the MDIO clock is
+set again for the device (12.9–12.12).
+
+**Source:** `ixgbe_x550.c` `ixgbe_reset_hw_X550em`, `ixgbe_set_mdio_speed`.
+
+### 12.14 To check on hardware
+
+None of section 12 has run on a chip. When an X550 or X553 is available:
+the X550's 2.5G/5G LINKS encodings and advertisement bits; the X553's EEC
+at `0x15FF8` reporting AUTO_RD and EE_PRES as the 82599's does; the PHY
+token's grant and busy statuses; GET_PHY_INFO on 0x15E4/0x15E5; the
+PMD_FLX_MASK_ST20 restart bit; and the CS4227/CS4223 SKU read on 0x15CE.
+
+
 ---
 
 ## Appendix A. Constants
@@ -2117,6 +2434,7 @@ The files are BSD-3-Clause, © Intel Corporation.
 | 8 | `ixgbe_common.c`: `ixgbe_check_mac_link_generic`; `ixgbe_x550.c`: `ixgbe_check_link_t_X550em` |
 | 9 | `if_ix.c`: `ixgbe_if_attach_pre`, `ixgbe_config_link`, `ixgbe_handle_mod`, `ixgbe_handle_msf`, `ixgbe_handle_phy` (call order) |
 | 11 | `ixgbe_82599.c`: `ixgbe_get_media_type_82599`, `ixgbe_init_mac_link_ops_82599`, `ixgbe_get_link_capabilities_82599`; `ixgbe_x550.c`: `ixgbe_read_ee_hostif_X550`; `ixgbe_common.c`: `ixgbe_hic_unlocked`, `ixgbe_start_hw_generic`, `ixgbe_need_crosstalk_fix`; `ixgbe_phy.c`: `ixgbe_identify_qsfp_module_generic` (commit `32b8381d711c`) |
+| 12 | `ixgbe_x550.c`: X550 and X550EM_a functions as cited per subsection; `ixgbe_x540.c`: `ixgbe_init_ops_X540`, `ixgbe_reset_hw_X540`; `ixgbe_common.c`: `ixgbe_hic_unlocked`, `ixgbe_host_interface_command`, `ixgbe_check_mac_link_generic`; `ixgbe_phy.c`/`ixgbe_phy.h`: as cited (commit `32b8381d711c`) |
 
 Intel's BSD-3-Clause notice for the shared code whose register layouts and
 sequences this document describes is reproduced in the repository `NOTICE`
