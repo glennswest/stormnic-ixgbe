@@ -224,6 +224,7 @@ lines are printed without verbose.
   driver is loaded. The GUID is meant for all the stormnic drivers. From the
   UEFI shell, volatile (gone at the next reset):
   `setvar StormnicVerbose -guid ce1479a2-eab9-4176-b0ad-c909ea5b8e0b -bs =01`.
+  stormbootx setting it from its own config is stormbootx#102.
 
 A quiet boot on server3 prints, for the 82599, the one line
 `stormnic-ixgbe 0.1.0: 0000:03:00.0 8086:1557 82599EN SFP+: MAC ac:1f:6b:8a:a4:5c, link up 10000 Mb/s, SNP installed`.
