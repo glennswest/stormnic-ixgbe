@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 2026-10-06
+- **feat:** #16, the gaps left after #13 against the all-IDs decision, closed from Intel's BSD shared code (none declined):
+  - **154f (82599_LS) is bound** (26 device IDs). The shared code's media type for it, `fiber_lco`, means no module ID, laser or rate select and no multispeed, so it runs the NVM AUTOC through `setup_mac_link` like a backplane (`Media::Lco`).
+  - **X552 crosstalk fix:** new `x552::nvm_word` reads NVM words through the firmware host interface (FLEX_MNG command 0x31, HICR.C/SV, FWSTS.FWRI, under SW_MNG + EEP). 15ac reads word 0x2C after the reset; with bit 7 clear an empty cage (ESDP SDP0) is link down, in the multispeed polls and the link wait. An unreadable word is logged and leaves the check off.
+  - **QSFP+ multispeed (1558):** modules with 1G SX + 10G SR or 1G LX + 10G LR run the 10G → 1G → 10G loop with no rate select or laser flap, and 1G without AN. The crosstalk cage check now also covers QSFP+, as the shared code does.
+  - `hardware::cage_link` does the cage check for both families. 4 new simulated tests (QSFP multispeed, QSFP cage check, 154f, X552 host-interface read).
+- **docs:** `docs/spec/phy.md` section 11, an addendum by the driver's maintainers (FreeBSD `sys/dev/ixgbe` at 32b8381d711c): 154f's path, the X552 host-interface NVM read, QSFP multispeed, which devices the crosstalk fix covers; pointers from 1.2, 4.4, 4.5 and 10 item 2; new CSRs in A.1. README (device table, Start, console lines, status), bring-up notes and work plan updated.
+
 ### 2026-10-04
 - **docs:** Docs refreshed from the code and what changed since 2026-09-28 (#10, #18, #25). stormbootx (v0.9.0+, stormbootx#56) runs smoltcp directly on our SNP, opened `EXCLUSIVE`, not the firmware's MNP/IP4/TCP4: README overview and Start step 7, docs/snp.md (overview, TPL, recycling, console lines) and docs/rings.md say so, and #4's acceptance is restated as `tcp4 : smoltcp over SNP` + lease + boothost claim. How it ships: stormbootx builds the driver `--locked` from `STORMNIC_IXGBE_REF` (563ea8d), carried as `.efi.off` on the normal media and loaded on the `stormbootx-rustnic` golden; replaces the "isn't done yet: stormbootx#29" text. The 2026-10-01 server3 boot recorded as the hardware result for #2, #3, #4 and #19 (README Status, docs/snp.md hardware check with the SOL lines, docs/bring-up.md checks and the PCI attributes result, docs/rings.md with the GPRC 0 open as #24). Module comments in `src/main.rs`, `src/binding.rs` and `src/snp.rs` no longer say MNP binds. CLAUDE.md: source rule (datasheets + BSD-3 shared code via docs/spec/phy.md), How it ships, Test (server3, rustnic golden pin), work-plan items checked off.
 

@@ -25,14 +25,14 @@ sections ("spec 5.4").
 
 | File | Spec | What |
 |---|---|---|
-| `src/hardware.rs` | 1.3, 1.5, 5.13, 6.7, 7.11, 8, 9 | `begin` (port, quiesce), `veto` (MMNGC once), `prepare`, `reset` (per family), `nvm_word` (EERD), `setup_link`, `link`, `wait_link` |
+| `src/hardware.rs` | 1.3, 1.5, 5.13, 6.7, 7.11, 8, 9 | `begin` (port, quiesce), `veto` (MMNGC once), `prepare`, `reset` (per family), `nvm_word` (EERD), `setup_link`, `link`, `cage_link` (crosstalk fix, 11.4), `wait_link` |
 | `src/sync.rs` | 1.4 | SW/FW semaphores: 82599 SMBI+SWESMBI, X540/X552 SMBI+REGSMP; 200 × 5 ms (82599, X540) or 1000 × 5 ms (X552); release delays; X552 port-1 I2C mux |
 | `src/mdio.rs` | 2 | clause 45 access per register under the port's PHY semaphore; probe/scan (ID with revision masked); generic and X557 PHY reset; 1.0x0004 abilities; the 6.5 advertisement and AN restart; 7.0x0001 read twice |
 | `src/i2c.rs` | 3 | bit-bang with both I2CCTL layouts (0x28 and 0x15F5C); ACK sampled 10 × 1 µs; byte reads 11 (82599) / 4 (X552) attempts, locked per attempt with 100 ms after a failure; writes 2 attempts; 82599 QSFP bus handshake; CS4227 combined read (checksum byte NACKed) and write |
-| `src/sfp.rs` | 4 | SFF-8472 identification in the spec's order (identifier re-read up to 5 times, a failed read is "not present", 10G-BX before BX10), multispeed, support rule, NVM key; QSFP; soft rate select |
-| `src/f82599.rs` | 5, 9.1–9.4 | media by device ID; NVM init sequence into CORECTL under MAC_CSR; protected AUTOC write with pipeline reset and LESM; capabilities; `setup_mac_link`; multispeed; laser; hard/soft rate select; crosstalk link check; TN1010 |
+| `src/sfp.rs` | 4, 11.3 | SFF-8472 identification in the spec's order (identifier re-read up to 5 times, a failed read is "not present", 10G-BX before BX10), multispeed, support rule, NVM key; QSFP and its multispeed rule; soft rate select |
+| `src/f82599.rs` | 5, 9.1–9.4, 11.1, 11.3 | media by device ID (154f: LCO, the backplane path); NVM init sequence into CORECTL under MAC_CSR; protected AUTOC write with pipeline reset and LESM; capabilities; `setup_mac_link`; multispeed; laser; hard/soft rate select; crosstalk link check; TN1010 |
 | `src/x540.rs` | 6, 9.5 | scan, power on (30.0x0000 bit 11), advertise all abilities, restart AN unless vetoed |
-| `src/x552.rs` | 7, 9.6–9.9 | IOSF sideband, KR AN, iXFI, mux, CS4227 check-and-reset, SFP per-speed step and multispeed, X557 unstall/reset/advertise, copper watch |
+| `src/x552.rs` | 7, 9.6–9.9, 11.2, 11.4 | NVM word through the firmware host interface; IOSF sideband, KR AN, iXFI, mux, CS4227 check-and-reset, SFP per-speed step and multispeed, X557 unstall/reset/advertise, copper watch |
 
 ### Order (spec 9)
 
@@ -57,7 +57,8 @@ sections ("spec 5.4").
 6. `wait_link`: every 100 ms, up to 9 s for copper (X540, 82599 T3, X552 15ad)
    and 3 s otherwise. X552 15ad reports up only when LINKS and the X557 both
    say so. It re-forces the internal link on each copper link-up or speed
-   change. 82599 SFP+ with the crosstalk fix treats an empty cage as down.
+   change. With the crosstalk fix (82599 SFP+ and QSFP+: SDP2; X552 15ac:
+   SDP0) an empty cage is down, and "up" is confirmed 5 ms later.
 
 A PCI I/O error or a removed device stops bring-up (DEVICE_ERROR).
 
@@ -86,6 +87,11 @@ recommendation).
      `setup_mac_link`.
   7. The SFI firmware patch version (spec 5.12) is logged.
 - **82599 QSFP (1558)**: as SFP+ with the QSFP ID and no rate select or laser.
+  Multispeed (spec 11.3) for 1G SX + 10G SR or 1G LX + 10G LR modules (not
+  DA): 10G, 1G (SFI without AN), 10G, as for SFP+ but with no rate select or
+  flap. The crosstalk fix covers QSFP too (spec 11.4).
+- **82599 LS (154f)**: the shared code's "fiber LCO" media (spec 11.1): no
+  module ID, laser or rate select, so the backplane path below.
 - **82599 backplane and CX4 (10f7, 10f8, 10f9, 10fc, 1514, 1517, 152a)**:
   `setup_mac_link` with the NVM capabilities and the KX_AN_COMP wait. With the
   NVM's own advertisement this writes nothing. SmartSpeed is not used, which
@@ -101,7 +107,12 @@ recommendation).
   4. AN restart unless vetoed.
 - **X552 15ab KR**: KR+KX AN and restart, unless vetoed.
 - **X552 15aa KX4, 15b0 XFI, 15ae 1G-T**: nothing.
-- **X552 15ac SFP+**: multispeed modules run 10G/1G/10G with soft rate select.
+- **X552 15ac SFP+**: for a supported module, NVM word 0x2C is read through
+  the firmware host interface (spec 11.2: FLEX_MNG command 0x31, HICR.C, under
+  SW_MNG + EEP); bit 7 clear turns on the cage check (SDP0) for the
+  multispeed polls and the link wait. If the host interface is disabled,
+  fails, or its semaphore is held, the console says so and the check stays
+  off. Multispeed modules run 10G/1G/10G with soft rate select.
   Each speed sets the KR AN for that speed only and writes the CS4227 EDC (5
   for passive DA, 9 otherwise). Single-speed modules take the per-speed step
   once.
@@ -125,11 +136,11 @@ recommendation).
 - **SmartSpeed not used** on 82599 backplanes (spec 9.2 allows it).
 - **X552 LASI alarm enables** (spec 7.8.3, optional) are not set: the driver
   polls.
-- **X552 crosstalk fix not applied.** The spec gives an NVM word 0x2C read,
-  but no X552 NVM access path; the 82599 reads it through EERD.
-- **QSFP multispeed not run.** Spec 4.5 does not say when a QSFP module is
-  multispeed.
-- **82599_LS (154f) not bound**, per spec 10 item 2.
+- **#16 (2026-10-06): 154f, the X552 crosstalk fix and QSFP multispeed are
+  done.** Each had a defined path in the shared code, added to the spec as
+  section 11 (an addendum by this driver's maintainers). An unreadable X552
+  crosstalk word is not fatal: the cage check stays off, which is what the
+  82599 does with the bit set. None of the three is verified on hardware.
 - EERD (NVM word read) is from the 82599 datasheet (8.2.3.2.2). The spec
   assumes NVM access is available.
 

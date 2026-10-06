@@ -6,7 +6,7 @@
 //! board variants, and docs/spec/phy.md 1.2, which lists 26 physical
 //! functions; all 26 are here. 82599_LS (154f) is missing from the shared
 //! code's MAC-type table, but its media type (`fiber_lco`) gives it the
-//! backplane path, and Linux binds it as an 82599 (spec 10 item 2, #16).
+//! backplane path, and Linux binds it as an 82599 (spec 11.1, #16).
 //! Virtual functions (82599 10ed, 152e; X540 1515, 1530; X552
 //! 15a8, 15a9) are not listed: a VF has no PHY access and must not be bound.
 

@@ -18,7 +18,7 @@
 //! - 15ae 1000BASE-T: the external Marvell PHY is run by firmware; nothing to write.
 //!
 //! The X552 NVM is read through the firmware's host interface (`nvm_word`,
-//! spec 11), not EERD; the SFP device reads the crosstalk-fix word with it.
+//! spec 11.2), not EERD; the SFP device reads the crosstalk-fix word with it.
 
 use super::mdio::{self, Speeds, ONE};
 use super::sfp::{self, Module};
@@ -264,7 +264,7 @@ fn check_cs4227<Io: Registers>(io: &mut Io, port: Port) -> R<bool, Io::Error> {
     Ok(true)
 }
 
-// Host interface (spec 11).
+// Host interface (spec 11.2).
 const HICR_EN: u32 = 1 << 0;
 const HICR_C: u32 = 1 << 1;
 const HICR_SV: u32 = 1 << 2;
@@ -276,7 +276,7 @@ const HI_TIMEOUT_US: usize = 500_000;
 
 // ---- NVM -------------------------------------------------------------------
 
-/// One NVM word through the host interface (spec 11): the shadow-RAM read
+/// One NVM word through the host interface (spec 11.2): the shadow-RAM read
 /// command in FLEX_MNG, HICR.C set, C polled clear for up to 500 ms, SV
 /// required; the word is the low half of FLEX_MNG dword 3. Holds SW_MNG and
 /// EEP for the whole exchange.
@@ -303,7 +303,7 @@ pub fn nvm_word<Io: Registers>(io: &mut Io, port: Port, word: u16) -> R<u16, Io:
     })
 }
 
-/// The crosstalk fix (spec 4.4): NVM word 0x2C bit 7 clear. None when the
+/// The crosstalk fix (spec 4.4, 11.4): NVM word 0x2C bit 7 clear. None when the
 /// host interface or its semaphore was unavailable; the fix is then off.
 fn crosstalk_fix<Io: Registers>(io: &mut Io, port: Port) -> R<Option<bool>, Io::Error> {
     match nvm_word(io, port, 0x2c) {

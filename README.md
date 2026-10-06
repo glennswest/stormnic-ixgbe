@@ -26,18 +26,20 @@ source). This crate replaces it (#5, stormbootx#27).
 ## Hardware
 
 `src/ids.rs` lists the Intel (8086) 10 GbE physical functions the driver
-binds, 25 device IDs:
+binds, 26 device IDs:
 
 | Family | Device IDs |
 |---|---|
-| 82599 | 10f7, 10f8, 10f9, 10fb (SFP+), 10fc, 1507, 1514, 1517, 151c (10GBASE-T), 1529, 152a, 154a, 154d, 1557, 1558 (QSFP+), 155d (bypass) |
+| 82599 | 10f7, 10f8, 10f9, 10fb (SFP+), 10fc, 1507, 1514, 1517, 151c (10GBASE-T), 1529, 152a, 154a, 154d, 154f (LS), 1557, 1558 (QSFP+), 155d (bypass) |
 | X540 | 1528 (X540-T), 1560 (X540-T1), 155c (bypass) |
 | X552 (Xeon D-1500) | 15aa (KX4), 15ab (KR), 15ac (SFP+), 15ad (X552/X557-AT), 15ae (1000BASE-T), 15b0 (XFI) |
 
 It only binds a function whose class code is network (0x02). Virtual
 functions (82599 10ed, 152e; X540 1515, 1530; X552 15a8, 15a9) are
-deliberately left out. 82599_LS (154f) is left out too: `docs/spec/phy.md`
-section 10 item 2 finds no bring-up path for it. server1's port is
+deliberately left out. 82599_LS (154f) is missing from Intel's shared-code
+MAC-type table, but its media type gives it the backplane path (the NVM's
+AUTOC; `docs/spec/phy.md` 11.1, #16); it has not been seen on hardware.
+server1's port is
 8086:1557 (82599EN SFP+), found by the first boot (#7): the driver logs every
 Intel network function it sees, matched or not (#1).
 
@@ -136,12 +138,13 @@ driver on its media, then calls the binding for each controller:
      - **82599** SFP+: the NVM's init sequence for the module into CORECTL,
        AUTOC to 10G SFI with a pipeline reset, laser on (SDP3) unless
        manageability owns it, and 10G then 1G for multispeed modules (SDP5
-       rate select). Backplane: the NVM advertisement kept. T3: the TN1010
-       advertises and restarts AN.
+       rate select; none on QSFP+). Backplane and 154f: the NVM
+       advertisement kept. T3: the TN1010 advertises and restarts AN.
      - **X540**: the PHY powered on, all its speeds advertised, AN restarted.
      - **X552** by device: 15ab KR AN (KR+KX) over the IOSF sideband.
-       15ac: the KR PHY and CS4227 EDC mode per module speed (10G then 1G
-       with soft rate select for multispeed modules). 15ad: internal iXFI
+       15ac: the NVM's crosstalk-fix word read through the firmware host
+       interface, then the KR PHY and CS4227 EDC mode per module speed (10G
+       then 1G with soft rate select for multispeed modules). 15ad: internal iXFI
        forced, X557 advertising 10G+1G. 15aa KX4, 15b0 XFI and 15ae 1G-T:
        nothing written.
 
@@ -149,8 +152,9 @@ driver on its media, then calls the binding for each controller:
      manageability veto;
   5. waits for link, polling every 100 ms: 9 s for 10GBASE-T, 3 s otherwise.
      On X552 15ad the internal link is re-forced to the copper speed at
-     copper link-up, and link is up only when LINKS and the X557 agree. Link
-     down is reported, not an error;
+     copper link-up, and link is up only when LINKS and the X557 agree.
+     With the NVM's crosstalk fix on (82599 SFP+/QSFP+, X552 15ac) an empty
+     cage is link down. Link down is reported, not an error;
   6. maps the descriptor rings and buffers for DMA, starts RX/TX queue 0,
      and, if the link is up, runs the DMA check: one broadcast frame sent,
      up to 3 s listening for any frame, GPTC/GPRC logged. Then it stops the
@@ -212,7 +216,7 @@ e.g. `10G+1G+100M`.
 
 | Line | When |
 |---|---|
-| `stormnic-ixgbe 0.1.0: driver binding installed (25 Intel 10G device IDs)` | entry point, success |
+| `stormnic-ixgbe 0.1.0: driver binding installed (26 Intel 10G device IDs)` | entry point, success |
 | `stormnic-ixgbe 0.1.0: driver binding not installed: STATUS` | entry point, failure (the image returns that status) |
 | `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X552 list; not binding` | Supported (and Start), unlisted Intel NIC |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: Supported` | Supported, will bind |
@@ -225,7 +229,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: reset (RST\|LNK_RST, link was down), LAN N, MAC xx:xx:xx:xx:xx:xx` | Start, MAC reset done, NVM MAC read |
 | `stormnic-ixgbe: LOC 8086:DDDD: EEMNGCTL CFG_DONEn not set after 1 s (EEMNGCTL 0xXXXXXXXX); NVM auto-read done, continuing` | Start, after the reset: this port's configuration-done bit never set (seen on the X9 blades, #21); not fatal |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup failed: ERROR; reporting LINKS only` | Start, link setup failed (e.g. `NoInitSequence { key: .. }`, `PipelineReset`, `Sideband { .. }`, `Semaphore { .. }`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: NVM mode MODE (AUTOC X AUTOC2 X), already as the NVM set it\|advertisement rewritten[, AN complete\|, AN not complete after 4.5 s]` | Start, 82599 backplane/CX4 |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: NVM mode MODE (AUTOC X AUTOC2 X), already as the NVM set it\|advertisement rewritten[, AN complete\|, AN not complete after 4.5 s]` | Start, 82599 backplane/CX4/LS (154f) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE (AUTOC X AUTOC2 X)` | Start, 82599 SFP+/QSFP+, no module (MODULE `none …`) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, not supported; link not set up (AUTOC X AUTOC2 X)` | Start, 82599, unknown module |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, NVM init sequence N words, MODE (NVM AUTOC X, now AUTOC X AUTOC2 X), laser on\|not driven (SDP3 is not an output)\|left to manageability\|not controlled[, cage-presence check on][, soft rate select failed]` | Start, 82599 module set up |
@@ -239,7 +243,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: KR PHY auto-negotiating KR+KX (LINK_CTRL_1 X), restarted` | Start, X552 15ab |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware` | Start, X552 15ab under the veto |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE[, not supported; link not set up]` | Start, X552 15ac, no module or an unsupported one (unknown, 1000BASE-T) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, KR PHY 10G\|1G (LINK_CTRL_1 X), CS4227 EDC CX1\|SR[, multispeed: link at 10G\|1G][, soft rate select failed]` | Start, X552 15ac module set up |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, KR PHY 10G\|1G (LINK_CTRL_1 X), CS4227 EDC CX1\|SR[, multispeed: link at 10G\|1G][, soft rate select failed][, cage-presence check on\|, NVM word 0x2C unreadable (host interface), cage-presence check off]` | Start, X552 15ac module set up |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: internal link iXFI forced\|KR (set at copper link-up), X557 advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X552 15ad |
 | `stormnic-ixgbe: LOC 8086:DDDD: copper link up N Mb/s, internal link re-forced N time(s)` | Start, X552 15ad copper up (1000 or 10000) |
 | `stormnic-ixgbe: LOC 8086:DDDD: copper link down` | Start, X552 15ad, no copper link within the wait |
@@ -296,6 +300,8 @@ expander and CS4227), rings, SNP and PCI decode.
 
 Not verified on hardware:
 - the X540 and X552 paths: no lab hardware (#15, #17, #23);
+- 154f, QSFP+ (1558) and the X552 host-interface NVM read (#16): no lab
+  hardware;
 - Start's DMA check: on server3 it sent its frame but received nothing in
   3 s (`GPRC 0`), though the SNP received fine moments later (#24);
 - the spec section 10 items the server3 log does not settle (cage-presence
@@ -303,7 +309,6 @@ Not verified on hardware:
   [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
 
 Open: the console trace is verbose on every boot (#22); the image is not
-byte-reproducible across build directories (#12); 154f, the X552 crosstalk
-fix and QSFP multispeed are not done (#16). Next: make the driver the
+byte-reproducible across build directories (#12). Next: make the driver the
 default on the normal media and retire `ipxe-intelx.efi` (#5,
 stormbootx#27).

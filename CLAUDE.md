@@ -82,7 +82,7 @@ for mlx4, server2 waits on minismbd#6. Results are in
     - X540: power-on and advertisement.
     - X552: X557 reset and advertisement, the copper watch, SFP multispeed, the CS4227 handshake waits.
     - I2C and SFP details, MNG_VETO everywhere, IDs 155c, 155d and 15b0.
-  - The policy choices and deviations are in docs/bring-up.md: no semaphore force-take (hands off, LINKS only); no Intel-OUI rule; no SmartSpeed; no X552 LASI; no X552 crosstalk fix (no NVM path); no QSFP multispeed; 154f unbound.
+  - The policy choices and deviations are in docs/bring-up.md: no semaphore force-take (hands off, LINKS only); no Intel-OUI rule; no SmartSpeed; no X552 LASI; no X552 crosstalk fix (no NVM path); no QSFP multispeed; 154f unbound. (Those last three were done in #16, 2026-10-06.)
   - sc-build at c174bcc: 43 tests plus the subsystem-11 check (81,408 bytes).
   - **Hardware checks** from spec section 10 are listed in docs/bring-up.md "Hardware checks" for server1/server2 (8086:1557): the NVM default LMS, SDP3 direction, SDP2 polarity, LINKS, module ID, SFI firmware version and reset type. The X540 and X552 items need hardware we don't have.
 - [x] Descriptor rings: legacy or advanced RX/TX descriptors, DMA buffers via `EFI_PCI_IO_PROTOCOL` Map/Unmap

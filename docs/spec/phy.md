@@ -29,6 +29,9 @@ read that driver and did not write any of it.
 - **No code is reproduced.** Sequences are written as numbered steps and
   tables. Every section ends with a **Source** line (file and function) so a
   reader can check it.
+- **Addendum:** section 11 was added on 2026-10-06 (#16) by the driver's
+  maintainers, not by this document's author, from the same shared code at
+  a later commit. Sections 1.2, 4.4, 4.5 and 10 point to it.
 
 ## Conventions
 
@@ -106,7 +109,7 @@ decisions.
 | `0x154D` | 82599_SFP_SF2 | 82599 | fiber | as 0x10FB |
 | `0x1557` | 82599EN_SFP | 82599 | fiber | as 0x10FB |
 | `0x1558` | 82599_QSFP_SF_QP | 82599 | fiber, QSFP+ | QSFP ID on an I2C bus shared by ports (section 3.5) |
-| `0x154F` | 82599_LS | 82599 | fiber "LCO" | see section 10 (missing from the shared code's MAC-type table) |
+| `0x154F` | 82599_LS | 82599 | fiber "LCO" | no module ID, laser or rate select: AUTOC from the NVM, as for a backplane (section 11.1; missing from the shared code's MAC-type table) |
 | `0x155D` | 82599_BYPASS | 82599 | fiber, fixed | always multispeed, soft rate select |
 | `0x151C` | 82599_T3_LOM | 82599 | copper | external TN1010 10GBASE-T PHY on MDIO |
 | `0x1528` | X540T | X540 | copper | integrated 10GBASE-T PHY on MDIO (section 6) |
@@ -699,7 +702,9 @@ sequence (82599) or EDC mode (X552) for it.
 
 The shared code reads module presence directly only when the "crosstalk fix"
 is active: NVM word `0x2C` bit 7 (`NO_CROSSTALK_WR`) is **clear**, on an 82599
-or X552 with fiber media. In that case:
+or X552 with fiber media (on the 82599, SFP+ or QSFP+; section 11.4). The X552
+reads that word through the firmware host interface (section 11.2). In that
+case:
 
 - 82599: cage full = ESDP `SDP2` (bit 2) set.
 - X552: cage full = ESDP `SDP0` (bit 0) set.
@@ -725,7 +730,8 @@ SR/LR to `srlr_coreN`. Active DA maps to `da_act_lmt_coreN`; a module counts as
 active DA if byte `0x83` bit 0 is set, or byte `0x82` = `0x23` and byte `0x92`
 > 0 and (byte `0x93` >> 4) = 0. Anything else is unsupported. The OUI is at
 `0xA5`–`0xA7`; the enforcement rule is as in 4.2 step 9. QSFP multispeed uses
-no rate select, and QSFP never uses full auto-negotiation.
+no rate select, and QSFP never uses full auto-negotiation. Which QSFP modules
+are multispeed is in section 11.3.
 
 **Source:** `ixgbe_phy.c` `ixgbe_identify_qsfp_module_generic`.
 
@@ -1804,8 +1810,8 @@ The common first steps for every device:
 2. **82599_LS (0x154F)** appears in FreeBSD's PCI match table and in the
    82599 media switch ("fiber LCO"), but **not** in the shared code's MAC-type
    table (`ixgbe_set_mac_type`). The shared code would therefore not bring it
-   up as an 82599. Its identification path (the generic SFP ID runs only for
-   plain "fiber" media) is unclear. Treat it as unverified.
+   up as an 82599. Section 11.1 derives its path from the media type; it is
+   still unverified on hardware.
 3. **X540 PHY MDIO address.** The shared code scans 0–31 and takes the first
    responder. Whether each port's MDIO bus reaches only its own PHY, and at
    which address, should be confirmed by logging the scan on hardware.
@@ -1844,6 +1850,99 @@ The common first steps for every device:
 
 ---
 
+## 11. Addendum (#16, 2026-10-06): gaps closed from the shared code
+
+Added by the driver's maintainers, not by this document's author, to close
+three points the sections above left open. Same rules: register layouts and
+sequences from Intel's BSD-3-Clause shared code, FreeBSD `sys/dev/ixgbe/` at
+commit `32b8381d711c` (2026-09-18); no code reproduced.
+
+### 11.1 82599_LS (0x154F): media "fiber LCO"
+
+The shared code has no MAC type for 0x154F (section 10 item 2), but every
+82599 decision that follows the MAC type keys off the media type, and
+`ixgbe_get_media_type_82599` gives 0x154F `fiber_lco`. With that media:
+
+1. **No module identification.** The module ID runs only for `fiber` (SFP+)
+   and `fiber_qsfp`; for any other media no module is reported present, and
+   with no MDIO PHY found the PHY type is "none".
+2. **No laser control and no rate select.** The laser operations are
+   installed only for `fiber` media; rate select runs only inside multispeed.
+3. **Not multispeed.** Only module identification (or the bypass part's
+   media) sets multispeed.
+4. **Link:** therefore `setup_mac_link` (5.7) with the capabilities from the
+   original AUTOC (5.6), as for a backplane. SmartSpeed is offered only to
+   `backplane` media, so it does not apply.
+5. **No crosstalk fix** (4.4): it covers `fiber` and `fiber_qsfp` only.
+
+Linux's ixgbe binds 0x154F as an ordinary 82599 board (its PCI table, read
+for behaviour only), which is consistent with this path.
+
+**Source:** `ixgbe_82599.c` `ixgbe_get_media_type_82599`,
+`ixgbe_init_mac_link_ops_82599`, `ixgbe_identify_phy_82599`; `ixgbe_phy.c`
+`ixgbe_identify_module_generic`; `ixgbe_common.c` `ixgbe_need_crosstalk_fix`.
+
+### 11.2 X552 NVM access: the firmware host interface
+
+The X552 reads NVM (shadow RAM) words through a command to its manageability
+firmware, not through EERD. One word:
+
+1. Take SW_FW_SYNC `SW_MNG` (bit 10) and `EEP` (bit 0) for the whole
+   exchange (section 1.4; `EEP` is also blocked by the hardware's FLASH bit).
+2. FWSTS (`0x15F0C`): set bit 9 (FWRI, firmware-reset indication; write 1).
+3. HICR (`0x15F00`): bit 0 (EN) must be set, else the host interface is
+   disabled and the read fails.
+4. Write the 16-byte command block, as four little-endian dwords, to
+   FLEX_MNG (`0x15800` + 4·i):
+   - dword 0: command `0x31` (read shadow RAM), length high `0x00`, length
+     low `0x06`, checksum `0xFF` (fixed) → `0xFF060031`;
+   - dword 1: the **byte** address (word × 2) as a big-endian 32-bit value;
+   - dword 2: the length in bytes (2) as a big-endian 16-bit value, then 16
+     bits of padding → `0x00000200`;
+   - dword 3: zero (data and padding).
+5. Set HICR bit 1 (C, command pending), keeping the value read in step 3.
+6. Poll HICR until C clears, up to 500 ms.
+7. Fail if C is still set or HICR bit 2 (SV, status valid) is clear.
+8. The word is the low 16 bits of FLEX_MNG dword 3.
+9. Release the semaphores.
+
+The shared code does not check the response's status byte for this command.
+
+**Source:** `ixgbe_x550.c` `ixgbe_read_ee_hostif_X550`; `ixgbe_common.c`
+`ixgbe_hic_unlocked`, `ixgbe_get_device_caps_generic`,
+`ixgbe_start_hw_generic`; `ixgbe_type.h` (`IXGBE_HICR*`, `IXGBE_FWSTS_FWRI`,
+`IXGBE_FLEX_MNG`, `FW_READ_SHADOW_RAM_*`, `FW_NVM_DATA_OFFSET`,
+`IXGBE_HI_COMMAND_TIMEOUT`, `struct ixgbe_hic_read_shadow_ram`).
+
+### 11.3 QSFP+ multispeed (82599 0x1558)
+
+After identifying a QSFP+ module (4.5), the module is multispeed when byte
+`0x86` (1G compliance) and byte `0x83` (10G compliance) pair up as 1000BASE-SX
+(`0x86` bit 0) with 10GBASE-SR (`0x83` bit 4), or 1000BASE-LX (`0x86` bit 1)
+with 10GBASE-LR (`0x83` bit 5). Unlike SFP+ (4.2), DA cables are not
+multispeed. A multispeed QSFP runs the multispeed algorithm (5.8) with no
+rate select (the module follows the MAC's speed) and no laser flap (no laser
+control on QSFP), and without full auto-negotiation (5.6), so its 1G step is
+1G SFI without AN.
+
+**Source:** `ixgbe_phy.c` `ixgbe_identify_qsfp_module_generic`;
+`ixgbe_common.c` `ixgbe_setup_mac_link_multispeed_fiber`; `ixgbe_82599.c`
+`ixgbe_get_link_capabilities_82599`, `ixgbe_init_mac_link_ops_82599`.
+
+### 11.4 Crosstalk fix: which devices
+
+The fix (4.4) is decided once, after the MAC reset, for the 82599 and the
+X552 from NVM word `0x2C` bit 7, and then applies only to `fiber` and
+`fiber_qsfp` media. So it covers the 82599 SFP+ and QSFP+ devices (cage pin
+SDP2) and the X552 SFP device 0x15AC (cage pin SDP0), not the bypass part
+(`fiber_fixed`), 0x154F or any backplane. The check applies to every link
+read, including those inside the multispeed loop.
+
+**Source:** `ixgbe_common.c` `ixgbe_start_hw_generic`,
+`ixgbe_need_crosstalk_fix`, `ixgbe_check_mac_link_generic`.
+
+---
+
 ## Appendix A. Constants
 
 ### A.1 CSR offsets
@@ -1875,6 +1974,9 @@ The common first steps for every device:
 | FUSES0_GROUP(i) | `0x11158` + 4·i |
 | NW_MNG_IF_SEL | `0x11178` |
 | CORECTL | `0x14F00` |
+| FLEX_MNG (X552 host interface RAM) | `0x15800`–`0x15EFC` |
+| HICR (X552) | `0x15F00` |
+| FWSTS (X552) | `0x15F0C` |
 | I2CCTL (X552) | `0x15F5C` |
 
 ### A.2 Bits
@@ -2014,6 +2116,7 @@ The files are BSD-3-Clause, © Intel Corporation.
 | 7 | `ixgbe_x550.c`: IOSF, KR, iXFI, CS4227, X557 and init functions as cited per subsection |
 | 8 | `ixgbe_common.c`: `ixgbe_check_mac_link_generic`; `ixgbe_x550.c`: `ixgbe_check_link_t_X550em` |
 | 9 | `if_ix.c`: `ixgbe_if_attach_pre`, `ixgbe_config_link`, `ixgbe_handle_mod`, `ixgbe_handle_msf`, `ixgbe_handle_phy` (call order) |
+| 11 | `ixgbe_82599.c`: `ixgbe_get_media_type_82599`, `ixgbe_init_mac_link_ops_82599`, `ixgbe_get_link_capabilities_82599`; `ixgbe_x550.c`: `ixgbe_read_ee_hostif_X550`; `ixgbe_common.c`: `ixgbe_hic_unlocked`, `ixgbe_start_hw_generic`, `ixgbe_need_crosstalk_fix`; `ixgbe_phy.c`: `ixgbe_identify_qsfp_module_generic` (commit `32b8381d711c`) |
 
 Intel's BSD-3-Clause notice for the shared code whose register layouts and
 sequences this document describes is reproduced in the repository `NOTICE`

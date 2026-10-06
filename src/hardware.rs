@@ -65,7 +65,7 @@ pub enum Error<E> {
     /// No external PHY answered on MDIO.
     NoPhy,
     /// X552 firmware host interface: disabled (HICR.EN clear), or the
-    /// command did not complete with a valid status (spec 11).
+    /// command did not complete with a valid status (spec 11.2).
     HostInterface { hicr: u32 },
     /// PHY soft reset (4.0x0000 bit 15) still set after 3 s (spec 2.6).
     PhyReset,

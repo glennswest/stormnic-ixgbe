@@ -56,7 +56,7 @@ pub enum Media {
     Copper,
     /// 82599_LS (154f), the shared code's `fiber_lco`: no module ID, laser
     /// or rate select, and not multispeed, so the NVM AUTOC is run as for a
-    /// backplane (spec 1.2, 10 item 2).
+    /// backplane (spec 11.1).
     Lco,
 }
 
@@ -418,13 +418,13 @@ fn module_setup<Io: Registers>(io: &mut Io, ctx: &Ctx, m: Module, autoc2: u32) -
         laser(io, true)?;
         Laser::On
     };
-    // Spec 4.4: NVM word 0x2C bit 7 clear on SFP+ or QSFP+ media: the
+    // Spec 4.4, 11.4: NVM word 0x2C bit 7 clear on SFP+ or QSFP+ media: the
     // crosstalk fix.
     let crosstalk = matches!(media, Media::Fiber | Media::Qsfp) && nvm_word(io, 0x2c)? & 0x80 == 0;
     let fixed = media == Media::FiberFixed;
     let (s, an) = capabilities(ctx.orig, Some((m, fixed)), media == Media::Qsfp);
     let mut st = Speedy { media, an, crosstalk, flap: laser_state == Laser::On, rate_ok: true };
-    // Spec 4.5, 5.8: QSFP multispeed runs the same loop with no rate select.
+    // Spec 11.3: QSFP multispeed runs the same loop (5.8) with no rate select.
     let speed = if m.multispeed || fixed {
         multispeed(io, ctx, &mut st, s)?
     } else {

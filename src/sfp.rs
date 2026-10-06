@@ -146,7 +146,7 @@ pub fn identify<Io: Registers>(io: &mut Io, port: Port) -> R<Module, Io::Error> 
     Ok(m)
 }
 
-/// QSFP+ identification (spec 4.5): identifier 0x0D, 10G compliance at 0x83,
+/// QSFP+ identification (spec 4.5, 11.3): identifier 0x0D, 10G compliance at 0x83,
 /// 1G at 0x86. Multispeed is 1G SX with 10G SR, or 1G LX with 10G LR; unlike
 /// SFP+, a DA cable is not.
 pub fn identify_qsfp<Io: Registers>(io: &mut Io, port: Port) -> R<Module, Io::Error> {
