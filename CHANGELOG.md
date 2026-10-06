@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-10-06
+- **docs:** Work plan: #23 (X550/X553): PCI IDs checked against pci.ids (11 new physical functions); waiting on the owner for how they get verified, since no lab machine has an X540/X55x.
 - **test:** #26: the new test finds the reset among CTRL writes (`begin` writes CTRL first). sc-build at 38d6f0c: 89 tests + subsystem-11 check (100,352 bytes); stormbootx#101 asks to pin 38d6f0c on the rustnic media. Work plan updated.
 - **feat:** #26: when the link stays down at the end of Start's wait, the `link down after N ms` line carries the raw LINKS, AUTOC, AUTOC2 and ESDP (`hardware::link_registers`), and an 82599 multispeed module that found no link at 10G, 1G or 10G again logs `multispeed: no link at 10G or 1G; left at 10G` (it was silent). server3 has had no Intel link from a link-down start (LNK_RST) since 2026-10-02, which the owner puts down to the cable/PHY; the next cold boot can now tell a dead far end (no signal detect or PCS sync) from our programming. New simulated test for the dead-link DA path (LNK_RST, 10G → 1G → 10G, left at 10G SFI, laser on).
 - **docs:** #26: docs/bring-up.md Hardware checks item 9 (link from a link-down start: what server3 showed, what to read in the new line, Linux ixgbe as the cable comparison since the ipxe media is gone); README console lines; CLAUDE.md Test says server3's Intel port can't run linked metal checks until the parts arrive; work plan.
