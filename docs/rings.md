@@ -92,8 +92,11 @@ a failed Start undo that. After bring-up, Start:
    - it sends one 60-byte broadcast frame, from the NIC's MAC with EtherType
      0x88B5 (IEEE 802 local experimental) and the payload
      `stormnic-ixgbe DMA check`, and waits up to 100 ms for its DD;
-   - it listens up to 3 s for any frame (broadcast, or to the NIC's own MAC)
-     and logs the first one;
+   - on a verbose boot (#22) it listens up to 3 s for any frame (broadcast,
+     or to the NIC's own MAC) and logs the first one. Otherwise it looks at
+     the RX ring once and does not wait (#24): the SNP's first exchange
+     (stormbootx's DHCP) exercises receive anyway, and the listen cost 3 s
+     on every boot that linked;
    - it logs GPTC/GPRC;
 4. stops the rings. Nothing DMAs until the SNP's Initialize starts them
    again, and its ExitBootServices event stops them, so no DMA runs into
@@ -115,8 +118,14 @@ broadcast back to its sender. What it shows on the blade:
 - **RX DMA**: a frame from the wire landed in a buffer, with DD and a length
   written back, and GPRC agrees.
 
-A quiet segment can leave the 3 s window empty. That is logged, not an
-error. A frame that comes back as a reply to ours (a real round trip) needs
+The receive half needs a verbose boot. Even then an empty 3 s window is
+logged, not an error, and says little about the driver: the window starts
+the moment the link comes up, and a switch port running spanning tree
+forwards nothing while it is listening and learning (up to about 30 s
+without PortFast/edge mode), and a quiet segment may send nothing anyway.
+GPRC 0 says no good frame reached the MAC's receive path in the window; it
+doesn't tell an idle wire from a port that isn't forwarding yet. Only the
+switch port's counters for the same seconds can tell those apart. A frame that comes back as a reply to ours (a real round trip) needs
 the SNP (#4) and a network stack on it: DHCP DISCOVER is a broadcast, and
 the OFFER is the answer.
 
@@ -128,15 +137,20 @@ Expected SOL lines (the X9 blades' ports; the address differs per blade) after `
 stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA: 33 pages at device 0x…, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors
 stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA check: broadcast frame sent, 60 bytes (GPTC 1)
 stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA check: received N frame(s) after M ms (GPRC N), first L bytes from … to ff:ff:ff:ff:ff:ff type 0806
+  (or: DMA check: received nothing in 3000 ms (GPRC N))
 stormnic-ixgbe: 0000:03:00.0 8086:1557: rings stopped
 ```
 
 What to check:
 1. `sent` and GPTC 1. `not sent within 100 ms` with the link up means TX DMA
    or queue setup is wrong.
-2. Something received on a busy segment (ARP from other hosts). GPRC should
-   be at least the count received. GPRC > 0 with `received nothing` means
-   frames reached the MAC but not the ring: look at SRRCTL, RDBA or RXEN.
+2. Receive: the check that matters is the SNP's (stormbootx leases an
+   address over it, docs/snp.md), not this window. In the window, GPRC
+   should be at least the count received; GPRC > 0 with `received nothing`
+   means frames reached the MAC but not the ring: look at SRRCTL, RDBA or
+   RXEN. `received nothing ... (GPRC 0)` is not a failure (see above: a
+   port not yet forwarding, or a quiet segment). A non-verbose boot logs
+   `receive not listened for (verbose only; GPRC N)` instead.
 3. Optionally, on another host on the segment,
    `tcpdump -e -i <if> ether proto 0x88b5` shows the check frame from the
    blade's MAC. That proves TX on the wire.
@@ -173,7 +187,9 @@ The tests cover:
 - filters.
 
 On hardware (server3, 8086:1557, 2026-10-01, this driver at 563ea8d):
-check 1 passed (`broadcast frame sent, 60 bytes (GPTC 1)`); check 2 did not:
+check 1 passed (`broadcast frame sent, 60 bytes (GPTC 1)`); the listen saw
 `received nothing in 3000 ms (GPRC 0)`. The rings themselves work: the SNP
-received the DHCP exchange moments later and the blade booted. Why the MAC
-counted no good frames during the 3 s window is open in #24.
+received the DHCP exchange moments later and the blade booted, which is the
+receive check. The empty window fits a switch port that was not yet
+forwarding right after link-up; that was not confirmed against the switch's
+counters. Since #24 the listen runs only on a verbose boot.

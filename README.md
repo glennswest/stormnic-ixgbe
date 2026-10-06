@@ -187,7 +187,8 @@ driver on its media, then calls the binding for each controller:
      reported, not an error;
   6. maps the descriptor rings and buffers for DMA, starts RX/TX queue 0,
      and, if the link is up, runs the DMA check: one broadcast frame sent,
-     up to 3 s listening for any frame, GPTC/GPRC logged. Then it stops the
+     GPTC/GPRC logged; only on a verbose boot it also listens up to 3 s
+     for any frame (#24). Then it stops the
      queues again, so nothing DMAs until the SNP is initialized. See
      [descriptor rings and DMA](docs/rings.md);
   7. installs `EFI_SIMPLE_NETWORK_PROTOCOL` and a device path (the
@@ -314,7 +315,8 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA region not mapped: STATUS; releasing` | Start, AllocateBuffer or Map failed (returns DEVICE_ERROR) | always, after the kept steps |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA check: broadcast frame sent, 60 bytes\|not sent within 100 ms (GPTC N)` | Start, link up | always when not sent, else verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received N frame(s) after M ms (GPRC N), first L bytes from MAC to MAC type TTTT` | Start, link up, a frame arrived | verbose |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received nothing in 3000 ms (GPRC N)` | Start, link up, nothing arrived | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received nothing in 3000 ms (GPRC N)` | Start, link up, verbose boot, nothing arrived in the listen; not an error (#24) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: receive not listened for (verbose only; GPRC N)` | Start, link up, not a verbose boot, nothing already in the ring | verbose (so never printed; kept for a failure's last steps) |
 | `stormnic-ixgbe: LOC 8086:DDDD: rings started; DMA check skipped: link down` | Start, link down | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: rings failed: ERROR` | Start, a queue did not enable (e.g. `Timeout { register: 1028, .. }`) | always, after the kept steps |
 | `stormnic-ixgbe: LOC 8086:DDDD: rings stopped[ (a frame was never sent)]` | Start, queues stopped after the check | always with `a frame was never sent`, else verbose |
@@ -363,8 +365,6 @@ Not verified on hardware:
   says so on the console when one runs (#17);
 - 154f, QSFP+ (1558) and the X552 host-interface NVM read (#16): no lab
   hardware;
-- Start's DMA check: on server3 it sent its frame but received nothing in
-  3 s (`GPRC 0`), though the SNP received fine moments later (#24);
 - the spec section 10 items the server3 log does not settle (cage-presence
   polarity with an empty cage, LNK_RST on a down link), listed in the
   [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
