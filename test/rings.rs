@@ -57,6 +57,22 @@ fn check_on_a_quiet_network_sends_and_times_out_listening() {
 }
 
 #[test]
+fn default_check_does_not_wait_to_receive_and_verbose_listens_3_s() {
+    assert_eq!((rings::listen_ms(false), rings::listen_ms(true)), (0, 3000));
+    let (_mem, mut nic, mut rings) = started();
+    let c = rings::check(&mut nic, &mut rings, MAC, rings::listen_ms(false)).unwrap();
+    assert!(c.sent);
+    assert_eq!((c.received, c.waited_ms, c.gptc), (0, 0, 1));
+    // Only the TX descriptor wait: the frame is sent at once, so no delay.
+    assert_eq!(nic.delays, 0);
+    // A frame already in the ring is still seen by the one look (#24).
+    let (_mem, mut nic, mut rings) = started();
+    nic.loopback = true;
+    let c = rings::check(&mut nic, &mut rings, MAC, rings::listen_ms(false)).unwrap();
+    assert_eq!((c.received, c.waited_ms, c.gprc), (1, 0, 1));
+}
+
+#[test]
 fn check_reports_the_first_frame_from_the_network() {
     let (_mem, mut nic, mut rings) = started();
     nic.inbound = vec![frame([0xff; 6], 1, 60), frame(MAC, 2, 342), frame([0x02, 9, 9, 9, 9, 9], 3, 60)];

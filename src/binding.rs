@@ -511,7 +511,7 @@ fn dma_up(pci: &PciIo, nic: &Nic, location: Option<Location>, mac: [u8; 6], link
     let mut io = Bar0(pci);
     let filter = Filter { broadcast: true, ..Filter::default() };
     let checked = rings.start(&mut io, filter).and_then(|()| match link {
-        Link::Up { .. } => rings::check(&mut io, &mut rings, mac, CHECK_LISTEN_MS).map(Some),
+        Link::Up { .. } => rings::check(&mut io, &mut rings, mac, rings::listen_ms(console::verbose())).map(Some),
         Link::Down => Ok(None),
     });
     match &checked {
@@ -539,9 +539,6 @@ fn dma_up(pci: &PciIo, nic: &Nic, location: Option<Location>, mac: [u8; 6], link
     }
 }
 
-/// How long the DMA check listens for a frame from the network.
-const CHECK_LISTEN_MS: usize = 3000;
-
 fn mac_str(m: [u8; 6]) -> impl core::fmt::Display {
     struct M([u8; 6]);
     impl core::fmt::Display for M {
@@ -563,6 +560,10 @@ fn log_check(at: &impl core::fmt::Display, dev: u16, c: &rings::Checked) {
         Some(f) => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: received {} frame(s) after {} ms (GPRC {}), first {} bytes from {} to {} type {:04x}",
             c.received, c.waited_ms, c.gprc, f.len, mac_str(f.source), mac_str(f.destination), f.ethertype
+        ),
+        None if c.waited_ms == 0 => trace!(
+            "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: receive not listened for (verbose only; GPRC {})",
+            c.gprc
         ),
         None => trace!(
             "stormnic-ixgbe: {at} 8086:{dev:04x}: DMA check: received nothing in {} ms (GPRC {})",

@@ -370,6 +370,13 @@ pub struct Checked {
     pub gprc: u32,
 }
 
+/// How long Start's DMA check listens for a frame from the network: 3 s on
+/// a verbose boot, otherwise none (one look at the ring, no wait). The
+/// receive path is exercised by the SNP's first exchange anyway (#24).
+pub const CHECK_LISTEN_MS: usize = 3000;
+
+pub fn listen_ms(verbose: bool) -> usize { if verbose { CHECK_LISTEN_MS } else { 0 } }
+
 /// Send one broadcast frame and listen up to `listen_ms` for any frame
 /// (broadcast, or to the station address). Rings must be started with
 /// broadcast accepted.
