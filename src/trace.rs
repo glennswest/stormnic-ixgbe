@@ -41,6 +41,4 @@ impl Ring {
         self.dropped = 0;
         (core::mem::take(&mut self.lines), dropped)
     }
-
-    pub fn len(&self) -> usize { self.lines.len() }
 }

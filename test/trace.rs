@@ -8,8 +8,8 @@ use trace::{Ring, KEEP};
 fn keeps_the_last_lines_oldest_first_and_counts_the_dropped() {
     let mut r = Ring::new();
     for i in 0..KEEP + 3 { r.push(format!("step {i}")); }
-    assert_eq!(r.len(), KEEP);
     let (lines, dropped) = r.take();
+    assert_eq!(lines.len(), KEEP);
     assert_eq!(dropped, 3);
     assert_eq!(lines.front().map(String::as_str), Some("step 3"));
     assert_eq!(lines.back().map(|s| s.clone()), Some(format!("step {}", KEEP + 2)));
