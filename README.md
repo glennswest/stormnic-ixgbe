@@ -20,8 +20,9 @@ them. On success stormbootx prints `tcp4 : smoltcp over SNP (nic N MAC)`.
 The driver has no PXE, no DHCP and no network code of its own above the
 link layer.
 
-The interim driver is iPXE's `ipxe-intelx.efi` (GPL-2 C, built from pinned
-source). This crate replaces it (#5, stormbootx#27).
+It replaced the interim iPXE driver, `ipxe-intelx.efi` (GPL-2 C). stormbootx
+v0.17.0 (2026-10-06, stormbootx#91) builds no iPXE at all, so this crate is
+the only Intel 10G driver stormbootx ships (#5, stormbootx#27, stormbootx#81).
 
 ## Hardware
 
@@ -95,18 +96,21 @@ x86_64-unknown-uefi` (stormbootx#43), checks subsystem 11, and records the
 commit and digest in `STORMNIC-SOURCE.txt`. At this writing the pin is
 563ea8d.
 
-- **`nic-drivers` golden and the normal `stormbootx` media:** the driver is
-  carried as `stormnic-ixgbe.efi.off`, which stormbootx does not load. The
-  normal media still uses `ipxe-intelx.efi`.
-- **`stormbootx-rustnic` media golden** (stormbootx#45): built with
-  `STORMNIC_ON_MEDIA="ixgbe mlx4"`, it carries `stormnic-ixgbe.efi` (and
-  stormnic-mlx4) in place of iPXE's NIC drivers. Its console shows
-  `media : rustnic ixgbe@<sha> mlx4@<sha>`.
+Since stormbootx v0.17.0 (stormbootx#52, #91; the owner's answer on
+stormbootx#81: no iPXE) there are two media and no iPXE anywhere:
+- **`nic-drivers` golden:** `bin/stormnic-ixgbe.efi` and
+  `bin/stormnic-mlx4.efi`, both loadable, with `STORMNIC-SOURCE.txt`. Its
+  `build-golden.sh` refuses any `ipxe-*` file.
+- **`stormbootx-rustnic` media:** carries both drivers in `\stormboot\drivers`
+  and loads them. Its console shows `media : rustnic ixgbe@<sha>
+  mlx4@<sha>`. This is the medium for the X9 blades, whose firmware has no
+  driver for the 82599.
+- **`stormbootx` media:** the firmware-drivers medium (`media : fw`). It
+  carries no NIC drivers, for machines whose firmware drives its own NICs.
 
 A new driver commit reaches a blade by asking stormbootx (an issue there) to
 move `STORMNIC_IXGBE_REF` and rebuild the rustnic golden; the master boots
-the blade from it. Making the driver the default on the normal media, and
-dropping `ipxe-intelx.efi`, is #5 (stormbootx#27).
+the blade from it.
 
 ## What it does today
 
@@ -200,11 +204,11 @@ The driver installs its own `EFI_DRIVER_BINDING_PROTOCOL` (`src/binding.rs`)
 rather than the `uefi` crate's `driver::install`, which refuses Stop with
 children.
 
-**Don't put this driver on media next to `ipxe-intelx.efi`:** whichever
-binds a NIC first holds it, and which one that is depends on load order.
-The rustnic media carries this driver without iPXE's; retiring iPXE's driver
-from the normal media is #5 (stormbootx#27). The blade check it waited for
-passed on server3 on 2026-10-01 (see Status).
+No other Intel 10G driver is on any stormbootx medium (iPXE's
+`ipxe-intelx.efi` was retired in stormbootx v0.17.0, #5). If one were added,
+whichever binds a NIC first would hold it, depending on load order. A
+platform's own driver still wins: Supported declines a NIC that another
+driver already holds.
 
 ### Console output
 
@@ -334,6 +338,6 @@ Not verified on hardware:
   [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
 
 Open: the console trace is verbose on every boot (#22); the image is not
-byte-reproducible across build directories (#12). Next: make the driver the
-default on the normal media and retire `ipxe-intelx.efi` (#5,
-stormbootx#27).
+byte-reproducible across build directories (#12). `ipxe-intelx.efi` is retired:
+stormbootx v0.17.0 ships no iPXE, and this driver is the X9 blades' Intel
+driver on the rustnic media (#5).

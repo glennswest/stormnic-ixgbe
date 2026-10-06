@@ -43,10 +43,11 @@ No configuration, ports or APIs; the console lines are listed in README.md.
 In stormbootx's `\stormboot\drivers`. Not a stormcentral component (no golden
 of its own). stormbootx builds it `--locked` from a pinned commit
 (`STORMNIC_IXGBE_REF` in its `scripts/build-nic-drivers.sh`, stormbootx#29,
-#43; 563ea8d at this writing). The normal media and the `nic-drivers` golden
-carry it as `stormnic-ixgbe.efi.off` (not loaded); the `stormbootx-rustnic`
-media golden (`STORMNIC_ON_MEDIA="ixgbe mlx4"`, stormbootx#45) loads it in
-place of iPXE's NIC drivers. Making it the default is #5 (stormbootx#27).
+#43; 563ea8d at this writing, ed9b719 asked in stormbootx#101). Since
+stormbootx v0.17.0 there is no iPXE on any medium (#5, stormbootx#81, #91):
+the `nic-drivers` golden holds `stormnic-ixgbe.efi` and `stormnic-mlx4.efi`,
+the `stormbootx-rustnic` media loads both (the X9 blades' medium), and the
+`stormbootx` media carries no NIC drivers (firmware's own).
 
 ## Test
 
@@ -143,5 +144,6 @@ traffic). The first boot after the parts arrive is #26's cold-start check
     - Default lines: one summary per bound NIC: `stormnic-ixgbe 0.1.0: LOC 8086:DDDD NAME: MAC …, link up N Mb/s | link down after N ms (LINKS …), SNP installed`. Always printed too: declined (another driver owns it), veto, unsupported module, SFI firmware ≤ 5, soft rate select failed, X552 NVM 0x2C unreadable, copper at an unusable speed, TN1010 over-temperature, DMA check frame not sent, every failure. Everything else (Supported, PCI attributes, reset, CFG_DONE, link setup, DMA, SNP init/filters/address/shutdown, Stop, binding installed) is trace.
     - Docs: README console table gets a Default/Verbose column and a "Verbose" section; cross-project: stormbootx issue to set the variable from stormboot.conf, the same variable proposed on stormnic-mlx4#16.
   - **Done in code, 2026-10-06, 5d6a7f5 + ed9b719 (warning fix), docs bdb8911.** sc-build at ed9b719: 92 tests (3 new in `test/trace.rs`), subsystem-11 check (105,984 bytes, no driver warnings), `--features verbose` build passes. stormbootx#101 now asks to pin ed9b719 (it includes #26's 38d6f0c); stormbootx#102 asks stormbootx to set `StormnicVerbose` from a config key; proposed the same variable on stormnic-mlx4#16. Left: a blade boot on the pinned media showing one `stormnic-ixgbe` line per NIC (the UEFI glue isn't simulated); #22 proposed after stormbootx#101.
-- [ ] Retire `ipxe-intelx.efi` from the stormbootx media (#5, stormbootx#27)
+- [x] Retire `ipxe-intelx.efi` from the stormbootx media (#5, stormbootx#27)
+  - **Done (#5 closed), 2026-10-06.** The trigger (a blade claiming its boothost with this driver alone) was met on server3 on 2026-10-01. The owner chose no iPXE (stormbootx#81), and stormbootx did it in v0.17.0 (39bb98b, stormbootx#91; media in #52). Checked at stormbootx main 07cdd22: `build-nic-drivers.sh` has no iPXE fetch or build and deletes any `ipxe-*.efi`, and `stormcentral component list` shows no `stormbootx-ipxe` component. stormbootx#91's sc-build checked that the `nic-drivers` tree holds only the two stormnic `.efi`, and that the rustnic ISO boots under OVMF and loads this driver. README (overview, How it ships, Status) and the How it ships section here updated. Pointing the X9 blades' BMCs at `stormbootx-rustnic` is the master's job (stormbootx#91).
 - [x] Docs refreshed from the code (2026-10-04): stormbootx's smoltcp-on-SNP path, how the driver ships (pinned, `.efi.off` / rustnic media), server3 results; closes #10, #18, #25.
