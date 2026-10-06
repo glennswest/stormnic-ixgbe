@@ -58,6 +58,14 @@ blade is **server3** (X9SRD-F, 8086:1557); server1 boots the rustnic media
 for mlx4, server2 waits on minismbd#6. Results are in
 `/var/lib/stormcentral/console/server3/sol.log`.
 
+**server3's Intel port has no link from a cold start** (#26): every boot
+since 2026-10-02 logs `reset (LNK_RST, link was down)` then `link down`. The
+owner puts it down to the Intel PHY/cable, to be fixed when parts arrive
+(stormbootx#81). Until then no metal check that needs a link can run there
+(#24's GPRC, #17's warning on a linked port, #22's quiet console with
+traffic). The first boot after the parts arrive is #26's cold-start check
+(docs/bring-up.md, Hardware checks item 9).
+
 ## Version
 
 `Cargo.toml` → `package.version`. Current: `v0.1.0`.

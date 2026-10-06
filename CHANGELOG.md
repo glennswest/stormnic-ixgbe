@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-10-06
+- **feat:** #26: when the link stays down at the end of Start's wait, the `link down after N ms` line carries the raw LINKS, AUTOC, AUTOC2 and ESDP (`hardware::link_registers`), and an 82599 multispeed module that found no link at 10G, 1G or 10G again logs `multispeed: no link at 10G or 1G; left at 10G` (it was silent). server3 has had no Intel link from a link-down start (LNK_RST) since 2026-10-02, which the owner puts down to the cable/PHY; the next cold boot can now tell a dead far end (no signal detect or PCS sync) from our programming. New simulated test for the dead-link DA path (LNK_RST, 10G → 1G → 10G, left at 10G SFI, laser on).
+- **docs:** #26: docs/bring-up.md Hardware checks item 9 (link from a link-down start: what server3 showed, what to read in the new line, Linux ixgbe as the cable comparison since the ipxe media is gone); README console lines; CLAUDE.md Test says server3's Intel port can't run linked metal checks until the parts arrive; work plan.
 - **docs:** Work plan: #16 done; sc-build 88 tests at 24d36bb, subsystem-11 check at 499a13e.
 - **feat:** #16, the gaps left after #13 against the all-IDs decision, closed from Intel's BSD shared code (none declined):
   - **154f (82599_LS) is bound** (26 device IDs). The shared code's media type for it, `fiber_lco`, means no module ID, laser or rate select and no multispeed, so it runs the NVM AUTOC through `setup_mac_link` like a backplane (`Media::Lco`).

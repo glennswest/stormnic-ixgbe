@@ -152,7 +152,7 @@ stormbootx#45). server3's 2026-10-01 log (563ea8d, below under item 8)
 settles items 1, 2, 4, 5, 6 and 7 for that board: NVM AUTOC c09c6084 kept
 as 10G SFI, `laser on`, `link up 10000 Mb/s`, a passive DA multispeed
 module, SFI firmware 0x107 and `reset (RST)` (the link was up). Still open
-there: item 3 (an empty cage) and the LNK_RST path. What a log should
+there: item 3 (an empty cage) and the LNK_RST path (item 9, #26). What a log should
 settle:
 
 1. **NVM default LMS** (item 10): the `NVM AUTOC` value in the `link setup:
@@ -181,6 +181,25 @@ settle:
    `Start: bound, SNP on a child handle`. stormbootx then leased an address
    over the SNP and claimed its boothost. The SOL capture ran without a gap
    across Start.
+
+9. **Link from a link-down start** (#26): power server3 off (so the link
+   starts down), boot the rustnic media, and expect `reset (LNK_RST, link was
+   down)` and then `link up 10000 Mb/s` (or `multispeed: link at 10000 Mb/s`).
+   Only the `RST` (link already up) branch is verified so far.
+   **Seen on server3, 2026-10-02 to 10-03** (563ea8d, 10 boots): every boot
+   was `LNK_RST`, passive DA identified, NVM sequence and 10G SFI written,
+   `laser on`, SFI firmware 0x107, then `link down after 3000 ms`. stormbootx
+   leased through the ConnectX-3 instead. The owner puts it down to the Intel
+   PHY/cable, fixed when parts arrive (stormbootx#81). A code review of the
+   path against spec 5.7, 5.8 and 5.13 found no difference.
+   If it still fails after the parts, the `link down` line now carries LINKS,
+   AUTOC, AUTOC2 and ESDP, and a multispeed module logs `multispeed: no link
+   at 10G or 1G`. Read LINKS against the 82599 datasheet's LINKS table: no
+   signal detect and no PCS/lane sync means nothing arrives from the far end
+   (cable, module or switch port), while signal with no sync or link points at
+   our programming. To compare the cable directly, check the port under
+   Linux's ixgbe (`ethtool` on the same port). The `stormbootx-ipxe` media no
+   longer exists (stormbootx v0.17.0 dropped iPXE).
 
 Not checkable on the X9 blades (no such hardware known):
 - X540: items 3 (PHY MDIO address) and 13 (7.0xC800 decode).

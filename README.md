@@ -235,6 +235,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, NVM init sequence N words, MODE (NVM AUTOC X, now AUTOC X AUTOC2 X), laser on\|not driven (SDP3 is not an output)\|left to manageability\|not controlled[, cage-presence check on][, soft rate select failed]` | Start, 82599 module set up |
 | `stormnic-ixgbe: LOC 8086:DDDD: SFI firmware patch version 0xN[ (expected > 5)]` | Start, 82599 module set up, NVM has the version |
 | `stormnic-ixgbe: LOC 8086:DDDD: multispeed: link at N Mb/s` | Start, 82599 multispeed module linked while trying speeds |
+| `stormnic-ixgbe: LOC 8086:DDDD: multispeed: no link at 10G or 1G; left at 10G` | Start, 82599 multispeed module: 10G, 1G and 10G again all stayed down (#26) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, advertising SPEEDS, AN and MAC pipeline restarted\|AN not restarted (veto)` | Start, 82599 151c |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, powered on, advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X540 (PHY `X540`) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: KX4, run by the hardware; nothing written` | Start, X552 15aa |
@@ -250,7 +251,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: copper link up at a speed the internal link cannot carry (AN vendor status X)` | Start, X552 15ad, copper at 10/100 Mb/s |
 | `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (100, 1000, 2500 on X552, or 10000) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link up, speed encoding reserved` | Start, link up with a reserved speed field |
-| `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise) |
+| `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise); the raw registers at the end of the wait, to tell a dead cable or partner (no signal detect, no PCS sync in LINKS) from a setup problem (#26) |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA: 33 pages at device 0xX, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors` | Start, DMA region mapped |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA region not mapped: STATUS; releasing` | Start, AllocateBuffer or Map failed (returns DEVICE_ERROR) |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA check: broadcast frame sent, 60 bytes\|not sent within 100 ms (GPTC N)` | Start, link up |
