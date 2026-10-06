@@ -78,8 +78,11 @@ The image is `target/x86_64-unknown-uefi/release/stormnic-ixgbe.efi`, about
 release profile is size-optimised (`opt-level = "z"`, LTO, `panic = "abort"`,
 stripped).
 
-There are no configuration keys, options, files or ports. The driver takes
-no input apart from the PCI functions the firmware offers it.
+There are no configuration keys, files or ports. The driver takes no input
+apart from the PCI functions the firmware offers it and the `StormnicVerbose`
+EFI variable (console output only, see "Console output"). The `verbose`
+Cargo feature turns the full trace on at build time:
+`sc-build 'cargo build --release --locked --target x86_64-unknown-uefi --features verbose'`.
 
 ## How it ships
 
@@ -206,7 +209,26 @@ passed on server3 on 2026-10-01 (see Status).
 ### Console output
 
 Everything goes to the console, which on the blades is the SOL capture on
-stormcentral. `LOC` is `seg:bus:dev.fn`, or `(location unknown)` if
+stormcentral. By default the driver prints **one line per NIC** it binds
+(PCI address, MAC, link, `SNP installed`), plus every warning and error
+(#22). The rest of the bring-up trace is printed only in verbose mode
+(below); otherwise the last 16 trace lines of the current Start are kept, and
+a failure prints them first, then the failure. The Default column says which
+lines are printed without verbose.
+
+**Verbose** is on when either:
+- the driver is built with `--features verbose`; or
+- the EFI variable `StormnicVerbose`, vendor GUID
+  `ce1479a2-eab9-4176-b0ad-c909ea5b8e0b`, exists and its first byte is not 0.
+  The driver reads it once, at its entry point, so it must be set before the
+  driver is loaded. The GUID is meant for all the stormnic drivers. From the
+  UEFI shell, volatile (gone at the next reset):
+  `setvar StormnicVerbose -guid ce1479a2-eab9-4176-b0ad-c909ea5b8e0b -bs =01`.
+
+A quiet boot on server3 prints, for the 82599, the one line
+`stormnic-ixgbe 0.1.0: 0000:03:00.0 8086:1557 82599EN SFP+: MAC ac:1f:6b:8a:a4:5c, link up 10000 Mb/s, SNP installed`.
+
+`LOC` is `seg:bus:dev.fn`, or `(location unknown)` if
 GetLocation fails. `PHY` is `X540`, `X557`, `TN1010`, `88E1500`, `88E1543`
 or `unknown PHY`; `ID` its 32-bit MDIO ID with the revision masked.
 `MODULE` is `passive DA`, `active limiting DA`, `10G SR/LR`, `1000BASE-T`,
@@ -214,73 +236,74 @@ or `unknown PHY`; `ID` its 32-bit MDIO ID with the revision masked.
 then `, multispeed` if so and `(id X, 10G X, 1G X, cable X)`. `SPEEDS` is
 e.g. `10G+1G+100M`.
 
-| Line | When |
-|---|---|
-| `stormnic-ixgbe 0.1.0: driver binding installed (26 Intel 10G device IDs)` | entry point, success |
-| `stormnic-ixgbe 0.1.0: driver binding not installed: STATUS` | entry point, failure (the image returns that status) |
-| `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X552 list; not binding` | Supported (and Start), unlisted Intel NIC |
-| `stormnic-ixgbe: LOC 8086:DDDD NAME: Supported` | Supported, will bind |
-| `stormnic-ixgbe: LOC 8086:DDDD NAME: already driven by another driver (STATUS); leaving it` | Supported, a platform driver owns it |
-| `stormnic-ixgbe: LOC 8086:DDDD: manageability veto (MMNGC.MNG_VETO): no PHY reset, AN restart or link-mode write` | Start, manageability owns the link |
-| `stormnic-ixgbe: LOC 8086:DDDD: PHY/module check failed: ERROR; link left to hardware, reporting LINKS only` | Start, a step before the reset failed (e.g. `Semaphore { held: .. }`, `NoPhy`, `I2c { .. }`, `Cs4227 { .. }`, `PhyReset`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N, reset\|not reset (veto)\|not reset (over-temperature alarm)` | Start, 82599 151c (PHY `TN1010`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: CS4227 reset\|CS4227 already reset` | Start, X552 15ac |
-| `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N (NW_MNG_IF_SEL X)[, power-up stall released], reset\|not reset (veto)` | Start, X552 15ad (PHY `X557`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: reset (RST\|LNK_RST, link was down), LAN N, MAC xx:xx:xx:xx:xx:xx` | Start, MAC reset done, NVM MAC read |
-| `stormnic-ixgbe: LOC 8086:DDDD: EEMNGCTL CFG_DONEn not set after 1 s (EEMNGCTL 0xXXXXXXXX); NVM auto-read done, continuing` | Start, after the reset: this port's configuration-done bit never set (seen on the X9 blades, #21); not fatal |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup failed: ERROR; reporting LINKS only` | Start, link setup failed (e.g. `NoInitSequence { key: .. }`, `PipelineReset`, `Sideband { .. }`, `Semaphore { .. }`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: NVM mode MODE (AUTOC X AUTOC2 X), already as the NVM set it\|advertisement rewritten[, AN complete\|, AN not complete after 4.5 s]` | Start, 82599 backplane/CX4/LS (154f) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE (AUTOC X AUTOC2 X)` | Start, 82599 SFP+/QSFP+, no module (MODULE `none …`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, not supported; link not set up (AUTOC X AUTOC2 X)` | Start, 82599, unknown module |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, NVM init sequence N words, MODE (NVM AUTOC X, now AUTOC X AUTOC2 X), laser on\|not driven (SDP3 is not an output)\|left to manageability\|not controlled[, cage-presence check on][, soft rate select failed]` | Start, 82599 module set up |
-| `stormnic-ixgbe: LOC 8086:DDDD: SFI firmware patch version 0xN[ (expected > 5)]` | Start, 82599 module set up, NVM has the version |
-| `stormnic-ixgbe: LOC 8086:DDDD: multispeed: link at N Mb/s` | Start, 82599 multispeed module linked while trying speeds |
-| `stormnic-ixgbe: LOC 8086:DDDD: multispeed: no link at 10G or 1G; left at 10G` | Start, 82599 multispeed module: 10G, 1G and 10G again all stayed down (#26) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, advertising SPEEDS, AN and MAC pipeline restarted\|AN not restarted (veto)` | Start, 82599 151c |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, powered on, advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X540 (PHY `X540`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: KX4, run by the hardware; nothing written` | Start, X552 15aa |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: XFI, run by the hardware; nothing written` | Start, X552 15b0 |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: external 1G PHY run by firmware; nothing written` | Start, X552 15ae |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: KR PHY auto-negotiating KR+KX (LINK_CTRL_1 X), restarted` | Start, X552 15ab |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware` | Start, X552 15ab under the veto |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE[, not supported; link not set up]` | Start, X552 15ac, no module or an unsupported one (unknown, 1000BASE-T) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, KR PHY 10G\|1G (LINK_CTRL_1 X), CS4227 EDC CX1\|SR[, multispeed: link at 10G\|1G][, soft rate select failed][, cage-presence check on\|, NVM word 0x2C unreadable (host interface), cage-presence check off]` | Start, X552 15ac module set up |
-| `stormnic-ixgbe: LOC 8086:DDDD: link setup: internal link iXFI forced\|KR (set at copper link-up), X557 advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X552 15ad |
-| `stormnic-ixgbe: LOC 8086:DDDD: copper link up N Mb/s, internal link re-forced N time(s)` | Start, X552 15ad copper up (1000 or 10000) |
-| `stormnic-ixgbe: LOC 8086:DDDD: copper link down` | Start, X552 15ad, no copper link within the wait |
-| `stormnic-ixgbe: LOC 8086:DDDD: copper link up at a speed the internal link cannot carry (AN vendor status X)` | Start, X552 15ad, copper at 10/100 Mb/s |
-| `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (100, 1000, 2500 on X552, or 10000) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link up, speed encoding reserved` | Start, link up with a reserved speed field |
-| `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise); the raw registers at the end of the wait, to tell a dead cable or partner (no signal detect, no PCS sync in LINKS) from a setup problem (#26) |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA: 33 pages at device 0xX, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors` | Start, DMA region mapped |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA region not mapped: STATUS; releasing` | Start, AllocateBuffer or Map failed (returns DEVICE_ERROR) |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: broadcast frame sent, 60 bytes\|not sent within 100 ms (GPTC N)` | Start, link up |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received N frame(s) after M ms (GPRC N), first L bytes from MAC to MAC type TTTT` | Start, link up, a frame arrived |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received nothing in 3000 ms (GPRC N)` | Start, link up, nothing arrived |
-| `stormnic-ixgbe: LOC 8086:DDDD: rings started; DMA check skipped: link down` | Start, link down |
-| `stormnic-ixgbe: LOC 8086:DDDD: rings failed: ERROR` | Start, a queue did not enable (e.g. `Timeout { register: 1028, .. }`) |
-| `stormnic-ixgbe: LOC 8086:DDDD: rings stopped[ (a frame was never sent)]` | Start, queues stopped after the check |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA region released; releasing` | Start, after `rings failed` (returns DEVICE_ERROR) |
-| `stormnic-ixgbe: LOC: could not stop DMA: ERROR; bus mastering disabled\|could not be disabled, DMA region kept allocated` | Start or Stop, the queues would not stop |
-| `stormnic-ixgbe: could not unmap\|free the DMA region: STATUS` | Stop or failed Start |
-| `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound, SNP on a child handle, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Start, success |
-| `stormnic-ixgbe: LOC 8086:DDDD: SNP not installed: STATUS; releasing` | Start, the child handle could not be made (returns DEVICE_ERROR) |
-| `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | SNP Initialize (the first use: stormbootx's smoltcp) |
-| `stormnic-ixgbe: LOC: SNP receive filters 0xNN, N multicast address(es)` | SNP ReceiveFilters changed the setting or set a list |
-| `stormnic-ixgbe: LOC: SNP station address xx:xx:xx:xx:xx:xx` | SNP StationAddress |
-| `stormnic-ixgbe: LOC: SNP shut down` | SNP Shutdown |
-| `stormnic-ixgbe: LOC: SNP CALL failed: ERROR` | an SNP call failed in the NIC (DEVICE_ERROR) |
-| `stormnic-ixgbe: LOC: Stop: SNP child removed` | Stop with the child |
-| `stormnic-ixgbe: LOC: Stop: SNP child still in use (STATUS); kept` | Stop, the SNP is still open (returns DEVICE_ERROR) |
-| `stormnic-ixgbe: LOC 8086:DDDD: Start could not open PciIo BY_DRIVER: STATUS` | Start, failure |
-| `stormnic-ixgbe: LOC 8086:DDDD: PCI attributes Get G, Supported S, Enable 0xE: SUCCESS; command 0xCCCC` | Start: memory decode and bus mastering through PciIo `Attributes` (G or S is a STATUS when that call failed) |
-| `stormnic-ixgbe: LOC 8086:DDDD: PCI attributes … Enable: STATUS (accepted alone 0xE); command 0xC0 -> 0xC1 (set directly)` | Start: the firmware refused `Enable` (AMI Aptio 4, #19); MSE/BME set in the PCI command register instead |
-| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: command 0xCCCC after PCI attributes …` | Start, failure: MSE/BME still clear after the config write (returns UNSUPPORTED) |
-| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: command register access failed: STATUS` | Start, failure (returns UNSUPPORTED) |
-| `stormnic-ixgbe: LOC 8086:DDDD NAME: bring-up failed: ERROR; releasing` | Start, quiesce/reset/NVM/MAC failed or the device went away (returns DEVICE_ERROR); ERROR is e.g. `Timeout { register: .., .. }`, `MissingNvm`, `InvalidMac`, `Removed`, `Io(..)`, or `Semaphore { .. }` when the reset's PHY semaphore is held |
-| `stormnic-ixgbe: could not undo the PCI decode and bus-master changes: STATUS` | Stop or failed Start |
-| `stormnic-ixgbe: LOC: Stop: released` | Stop |
-| `stormnic-ixgbe: Stop for a controller this driver never started` | Stop, unknown controller (returns DEVICE_ERROR) |
+| Line | When | Default |
+|---|---|---|
+| `stormnic-ixgbe 0.1.0: driver binding installed (26 Intel 10G device IDs)` | entry point, success | verbose |
+| `stormnic-ixgbe 0.1.0: driver binding not installed: STATUS` | entry point, failure (the image returns that status) | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X552 list; not binding` | Supported (and Start), unlisted Intel NIC | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: Supported` | Supported, will bind | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: already driven by another driver (STATUS); leaving it` | Supported, a platform driver owns it | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: manageability veto (MMNGC.MNG_VETO): no PHY reset, AN restart or link-mode write` | Start, manageability owns the link | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: PHY/module check failed: ERROR; link left to hardware, reporting LINKS only` | Start, a step before the reset failed (e.g. `Semaphore { held: .. }`, `NoPhy`, `I2c { .. }`, `Cs4227 { .. }`, `PhyReset`) | always, after the kept steps |
+| `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N, reset\|not reset (veto)\|not reset (over-temperature alarm)` | Start, 82599 151c (PHY `TN1010`) | always with the over-temperature alarm, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: CS4227 reset\|CS4227 already reset` | Start, X552 15ac | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: PHY ID at MDIO N (NW_MNG_IF_SEL X)[, power-up stall released], reset\|not reset (veto)` | Start, X552 15ad (PHY `X557`) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: reset (RST\|LNK_RST, link was down), LAN N, MAC xx:xx:xx:xx:xx:xx` | Start, MAC reset done, NVM MAC read | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: EEMNGCTL CFG_DONEn not set after 1 s (EEMNGCTL 0xXXXXXXXX); NVM auto-read done, continuing` | Start, after the reset: this port's configuration-done bit never set (seen on the X9 blades, #21); not fatal | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup failed: ERROR; reporting LINKS only` | Start, link setup failed (e.g. `NoInitSequence { key: .. }`, `PipelineReset`, `Sideband { .. }`, `Semaphore { .. }`) | always, after the kept steps |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: NVM mode MODE (AUTOC X AUTOC2 X), already as the NVM set it\|advertisement rewritten[, AN complete\|, AN not complete after 4.5 s]` | Start, 82599 backplane/CX4/LS (154f) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE (AUTOC X AUTOC2 X)` | Start, 82599 SFP+/QSFP+, no module (MODULE `none …`) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, not supported; link not set up (AUTOC X AUTOC2 X)` | Start, 82599, unknown module | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, NVM init sequence N words, MODE (NVM AUTOC X, now AUTOC X AUTOC2 X), laser on\|not driven (SDP3 is not an output)\|left to manageability\|not controlled[, cage-presence check on][, soft rate select failed]` | Start, 82599 module set up | always with `soft rate select failed`, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: SFI firmware patch version 0xN[ (expected > 5)]` | Start, 82599 module set up, NVM has the version | always when ≤ 5, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: multispeed: link at N Mb/s` | Start, 82599 multispeed module linked while trying speeds | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: multispeed: no link at 10G or 1G; left at 10G` | Start, 82599 multispeed module: 10G, 1G and 10G again all stayed down (#26) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, advertising SPEEDS, AN and MAC pipeline restarted\|AN not restarted (veto)` | Start, 82599 151c | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: PHY ID at MDIO N, powered on, advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X540 (PHY `X540`) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: KX4, run by the hardware; nothing written` | Start, X552 15aa | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: XFI, run by the hardware; nothing written` | Start, X552 15b0 | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: external 1G PHY run by firmware; nothing written` | Start, X552 15ae | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: KR PHY auto-negotiating KR+KX (LINK_CTRL_1 X), restarted` | Start, X552 15ab | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: manageability veto (MMNGC.MNG_VETO); link left to firmware` | Start, X552 15ab under the veto | verbose (the veto line above is always shown) |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE[, not supported; link not set up]` | Start, X552 15ac, no module or an unsupported one (unknown, 1000BASE-T) | always when a module is fitted but not supported, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: module MODULE, KR PHY 10G\|1G (LINK_CTRL_1 X), CS4227 EDC CX1\|SR[, multispeed: link at 10G\|1G][, soft rate select failed][, cage-presence check on\|, NVM word 0x2C unreadable (host interface), cage-presence check off]` | Start, X552 15ac module set up | always with `soft rate select failed` or `NVM word 0x2C unreadable`, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: link setup: internal link iXFI forced\|KR (set at copper link-up), X557 advertising SPEEDS, AN restarted\|AN not restarted (veto)` | Start, X552 15ad | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: copper link up N Mb/s, internal link re-forced N time(s)` | Start, X552 15ad copper up (1000 or 10000) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: copper link down` | Start, X552 15ad, no copper link within the wait | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: copper link up at a speed the internal link cannot carry (AN vendor status X)` | Start, X552 15ad, copper at 10/100 Mb/s | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (100, 1000, 2500 on X552, or 10000) | verbose (the summary line has it) |
+| `stormnic-ixgbe: LOC 8086:DDDD: link up, speed encoding reserved` | Start, link up with a reserved speed field | verbose (the summary line has it) |
+| `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise); the raw registers at the end of the wait, to tell a dead cable or partner (no signal detect, no PCS sync in LINKS) from a setup problem (#26) | verbose (the summary line has it) |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA: 33 pages at device 0xX, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors` | Start, DMA region mapped | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA region not mapped: STATUS; releasing` | Start, AllocateBuffer or Map failed (returns DEVICE_ERROR) | always, after the kept steps |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: broadcast frame sent, 60 bytes\|not sent within 100 ms (GPTC N)` | Start, link up | always when not sent, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received N frame(s) after M ms (GPRC N), first L bytes from MAC to MAC type TTTT` | Start, link up, a frame arrived | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received nothing in 3000 ms (GPRC N)` | Start, link up, nothing arrived | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: rings started; DMA check skipped: link down` | Start, link down | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: rings failed: ERROR` | Start, a queue did not enable (e.g. `Timeout { register: 1028, .. }`) | always, after the kept steps |
+| `stormnic-ixgbe: LOC 8086:DDDD: rings stopped[ (a frame was never sent)]` | Start, queues stopped after the check | always with `a frame was never sent`, else verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA region released; releasing` | Start, after `rings failed` (returns DEVICE_ERROR) | always |
+| `stormnic-ixgbe: LOC: could not stop DMA: ERROR; bus mastering disabled\|could not be disabled, DMA region kept allocated` | Start or Stop, the queues would not stop | always, after the kept steps |
+| `stormnic-ixgbe: could not unmap\|free the DMA region: STATUS` | Stop or failed Start | always |
+| `stormnic-ixgbe 0.1.0: LOC 8086:DDDD NAME: MAC xx:xx:xx:xx:xx:xx, link up N Mb/s\|link up, speed encoding reserved\|link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X), SNP installed` | Start, success: **the one line per NIC** (#22). On a link down the raw registers tell a dead cable or partner (no signal detect or PCS sync) from a setup problem (#26) | always |
+| `stormnic-ixgbe: the N step(s) before the failure below[ (M earlier not kept)]:`, then those lines | before each "after the kept steps" failure when not verbose: the last 16 trace lines since this Start began | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: SNP not installed: STATUS; releasing` | Start, the child handle could not be made (returns DEVICE_ERROR) | always, after the kept steps |
+| `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | SNP Initialize (the first use: stormbootx's smoltcp) | verbose |
+| `stormnic-ixgbe: LOC: SNP receive filters 0xNN, N multicast address(es)` | SNP ReceiveFilters changed the setting or set a list | verbose |
+| `stormnic-ixgbe: LOC: SNP station address xx:xx:xx:xx:xx:xx` | SNP StationAddress | verbose |
+| `stormnic-ixgbe: LOC: SNP shut down` | SNP Shutdown | verbose |
+| `stormnic-ixgbe: LOC: SNP CALL failed: ERROR` | an SNP call failed in the NIC (DEVICE_ERROR) | always |
+| `stormnic-ixgbe: LOC: Stop: SNP child removed` | Stop with the child | verbose |
+| `stormnic-ixgbe: LOC: Stop: SNP child still in use (STATUS); kept` | Stop, the SNP is still open (returns DEVICE_ERROR) | always |
+| `stormnic-ixgbe: LOC 8086:DDDD: Start could not open PciIo BY_DRIVER: STATUS` | Start, failure | always, after the kept steps |
+| `stormnic-ixgbe: LOC 8086:DDDD: PCI attributes Get G, Supported S, Enable 0xE: SUCCESS; command 0xCCCC` | Start: memory decode and bus mastering through PciIo `Attributes` (G or S is a STATUS when that call failed) | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: PCI attributes … Enable: STATUS (accepted alone 0xE); command 0xC0 -> 0xC1 (set directly)` | Start: the firmware refused `Enable` (AMI Aptio 4, #19); MSE/BME set in the PCI command register instead | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: command 0xCCCC after PCI attributes …` | Start, failure: MSE/BME still clear after the config write (returns UNSUPPORTED) | always, after the kept steps |
+| `stormnic-ixgbe: LOC 8086:DDDD: Start could not enable memory decode and bus mastering: command register access failed: STATUS` | Start, failure (returns UNSUPPORTED) | always, after the kept steps |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: bring-up failed: ERROR; releasing` | Start, quiesce/reset/NVM/MAC failed or the device went away (returns DEVICE_ERROR); ERROR is e.g. `Timeout { register: .., .. }`, `MissingNvm`, `InvalidMac`, `Removed`, `Io(..)`, or `Semaphore { .. }` when the reset's PHY semaphore is held | always, after the kept steps |
+| `stormnic-ixgbe: could not undo the PCI decode and bus-master changes: STATUS` | Stop or failed Start | always |
+| `stormnic-ixgbe: LOC: Stop: released` | Stop | verbose |
+| `stormnic-ixgbe: Stop for a controller this driver never started` | Stop, unknown controller (returns DEVICE_ERROR) | always |
 
 ## Status
 

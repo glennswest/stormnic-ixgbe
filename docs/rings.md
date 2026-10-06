@@ -122,7 +122,7 @@ the OFFER is the answer.
 
 ## Hardware checks (82599 SFP+, 8086:1557)
 
-Expected SOL lines (the X9 blades' ports; the address differs per blade) after `link up 10000 Mb/s`:
+Expected SOL lines (the X9 blades' ports; the address differs per blade) after `link up 10000 Mb/s`, in a verbose boot (#22: these are trace lines; see README, "Console output"):
 
 ```
 stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA: 33 pages at device 0x…, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors

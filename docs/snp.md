@@ -124,9 +124,13 @@ It prints nothing, because the OS may already have the console.
 
 ## Console lines
 
+Since #22 only the Start summary, `SNP not installed` and `SNP CALL failed`
+are printed by default; the others need verbose (README, "Console output":
+the `StormnicVerbose` EFI variable or `--features verbose`).
+
 | Line | When |
 |---|---|
-| `stormnic-ixgbe: LOC 8086:DDDD NAME: Start: bound, SNP on a child handle, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Start, success |
+| `stormnic-ixgbe 0.1.0: LOC 8086:DDDD NAME: MAC xx:xx:xx:xx:xx:xx, link up N Mb/s\|link down after N ms (…), SNP installed` | Start, success: the one default line per NIC (#22; before it, `Start: bound, SNP on a child handle, MAC …, media present\|absent`) |
 | `stormnic-ixgbe: LOC 8086:DDDD: SNP not installed: STATUS; releasing` | Start, the child handle could not be made (DEVICE_ERROR) |
 | `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | Initialize (the first use: stormbootx's smoltcp) |
 | `stormnic-ixgbe: LOC: SNP receive filters 0xNN, N multicast address(es)` | ReceiveFilters changed the setting or set a list |

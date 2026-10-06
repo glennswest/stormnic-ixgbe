@@ -146,6 +146,13 @@ recommendation).
 
 ### Hardware checks (spec section 10)
 
+**Boot verbose for these checks** (#22): most lines they read (`reset (…)`,
+`link setup: …`, `SFI firmware patch version`, `multispeed: …`) are trace
+lines, printed only with `StormnicVerbose` set before the driver loads, or a
+`--features verbose` build (README, "Console output"). The default console
+has the one summary line per NIC, which keeps the link state and, on a link
+down, the LINKS/AUTOC/AUTOC2/ESDP values.
+
 The X9 blades' Intel ports are 8086:1557, an 82599 SFP+ (server1 at
 0000:03:00.0; server3, ac:1f:6b:8a:a4:5c, booted on the rustnic media,
 stormbootx#45). server3's 2026-10-01 log (563ea8d, below under item 8)
