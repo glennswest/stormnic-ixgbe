@@ -18,6 +18,8 @@ verbose = []
 [dependencies]
 uefi = { version = "0.39", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
 uefi-raw = "0.15"
+# Only to cap the uefi crate's logger (#8); log 0.4 is already in the lock through uefi.
+log = "0.4"
 
 [profile.release]
 opt-level = "z"

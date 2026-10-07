@@ -30,6 +30,10 @@ fn main() -> Status {
         return Status::LOAD_ERROR;
     }
     console::init();
+    // The uefi crate logs to the console through `log` (its logger, and the
+    // panic handler at ERROR). Keep its DEBUG/TRACE, and INFO unless
+    // verbose, off the boot console; warnings, errors and panics still show (#8).
+    log::set_max_level(if console::verbose() { log::LevelFilter::Info } else { log::LevelFilter::Warn });
     let version = env!("CARGO_PKG_VERSION");
     match binding::install() {
         Ok(()) => {

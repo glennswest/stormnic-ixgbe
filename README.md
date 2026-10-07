@@ -254,6 +254,10 @@ lines are printed without verbose.
   `setvar StormnicVerbose -guid ce1479a2-eab9-4176-b0ad-c909ea5b8e0b -bs =01`.
   stormbootx setting it from its own config is stormbootx#102.
 
+The `uefi` crate's own log messages (its logger, and a panic) are capped at
+WARN, or at INFO when verbose: its DEBUG and TRACE never reach the console,
+and its warnings, errors and panics always do (#8).
+
 A quiet boot on server3 prints, for the 82599, the one line
 `stormnic-ixgbe 0.1.0: 0000:03:00.0 8086:1557 82599EN SFP+: MAC ac:1f:6b:8a:a4:5c, link up 10000 Mb/s, SNP installed`.
 

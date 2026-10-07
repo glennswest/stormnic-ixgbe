@@ -68,6 +68,7 @@ dependencies = [
 name = "stormnic-ixgbe"
 version = "0.1.0"
 dependencies = [
+ "log",
  "uefi",
  "uefi-raw",
 ]
