@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-10-06
+- **docs:** #22: waiting on a blade boot of the rustnic media at 728b328 (stormbootx#101 built it; no blade has booted it yet); requested in stormbootx#107, and #22 proposed after it.
 - **docs:** Work plan: #14's blade boot happened on server3 (2026-10-01); what is left is removing the stale `needs-owner` labels from closed #1 and #9.
 - **docs:** #24 done: sc-build at 0e8d997 passed the simulated tests (new one included), the subsystem-11 check (119,808 bytes) and the `verbose` build; work plan checked off.
 - **feat:** #24: Start's DMA check listens for a received frame (up to 3 s) only on a verbose boot (#22's switch); otherwise it looks at the RX ring once and does not wait, so a linked boot is 3 s faster. The TX half (one broadcast frame, DD within 100 ms, GPTC) still runs on every linked Start. A non-verbose check logs `DMA check: receive not listened for (verbose only; GPRC N)` as a trace line. `rings::listen_ms`; 1 new simulated test.
