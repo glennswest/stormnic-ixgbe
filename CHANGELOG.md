@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-10-06
+- **docs:** #24 done: sc-build at 0e8d997 passed the simulated tests (new one included), the subsystem-11 check (119,808 bytes) and the `verbose` build; work plan checked off.
 - **feat:** #24: Start's DMA check listens for a received frame (up to 3 s) only on a verbose boot (#22's switch); otherwise it looks at the RX ring once and does not wait, so a linked boot is 3 s faster. The TX half (one broadcast frame, DD within 100 ms, GPTC) still runs on every linked Start. A non-verbose check logs `DMA check: receive not listened for (verbose only; GPRC N)` as a trace line. `rings::listen_ms`; 1 new simulated test.
 - **docs:** #24: docs/rings.md says what an empty window and GPRC 0 mean (a switch port not yet forwarding after link-up, or a quiet segment; not a driver failure; only the switch's counters tell them apart), that the SNP's DHCP exchange is the receive check, and corrects Hardware checks item 2; README Start step 6, console lines and Status.
 - **docs:** licensed MIT (LICENSE added); NOTICE is now an acknowledgement of where the hardware facts were learned (an original Rust rewrite, no code copied) — owner, repo made public
