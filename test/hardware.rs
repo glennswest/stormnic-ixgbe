@@ -1,4 +1,5 @@
 #[path = "../src/hardware.rs"]
+#[allow(dead_code)]
 mod hardware;
 #[path = "../src/ids.rs"]
 #[allow(dead_code)]
