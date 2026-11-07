@@ -42,3 +42,21 @@ impl Ring {
         (core::mem::take(&mut self.lines), dropped)
     }
 }
+
+/// Keys seen before (#22): a line that would repeat on every connect
+/// attempt, such as "held by another driver", is printed for the first
+/// one only.
+pub struct Once {
+    seen: alloc::vec::Vec<usize>,
+}
+
+impl Once {
+    pub const fn new() -> Self { Once { seen: alloc::vec::Vec::new() } }
+
+    /// True the first time `key` is given, false after.
+    pub fn first(&mut self, key: usize) -> bool {
+        if self.seen.contains(&key) { return false; }
+        self.seen.push(key);
+        true
+    }
+}

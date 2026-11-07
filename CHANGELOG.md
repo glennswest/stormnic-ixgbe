@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-11-07
+- **fix:** #22: when a platform driver holds the NIC, Supported prints `… NAME: held by another driver; leaving it` once per controller (it was `already driven by another driver (ACCESS_DENIED); leaving it` on every connect attempt, 8 times after a warm reset on server1, and `DENIED` tripped the boot-log review, stormcos_qa#71). A refusal with any other status prints `not opened for this driver (STATUS)` once. Every attempt and its status is a verbose trace line. `trace::Once`, 1 new test; README console table.
 - **docs:** #26 still parked until server3's replacement transceivers/cables are fitted (owner, 2026-10-09); server3's SOL still shows only old-media link-down boots. Work plan updated.
 - **fix:** the simulated-test build had 95 dead-code warnings: `test/hardware.rs` includes `src/hardware.rs` without the `#[allow(dead_code)]` the other test crates use (the rings/SNP items it does not exercise). Added.
 - **docs:** #33: sc-build at 4b4813d passed (106 tests, subsystem-11 check 120,832 bytes, verbose build, 0 warnings); stormbootx#192 asks to pin 4b4813d on the rustnic media for the metal check, and #33 is proposed after it.

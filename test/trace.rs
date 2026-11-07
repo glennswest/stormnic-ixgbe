@@ -35,3 +35,12 @@ fn clear_forgets_lines_and_the_dropped_count() {
     assert!(lines.is_empty());
     assert_eq!(dropped, 0);
 }
+
+#[test]
+fn once_is_true_for_the_first_time_each_key_is_seen() {
+    let mut o = trace::Once::new();
+    assert!(o.first(0x1000));
+    for _ in 0..7 { assert!(!o.first(0x1000), "the 8 connect attempts print one line"); }
+    assert!(o.first(0x2000), "another controller gets its own line");
+    assert!(!o.first(0x2000));
+}

@@ -277,7 +277,9 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe 0.1.0: driver binding not installed: STATUS` | entry point, failure (the image returns that status) | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: Intel network function, not in the 82599/X540/X550/X552/X553 list; not binding` | Supported (and Start), unlisted Intel NIC | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD NAME: Supported` | Supported, will bind | verbose |
-| `stormnic-ixgbe: LOC 8086:DDDD NAME: already driven by another driver (STATUS); leaving it` | Supported, a platform driver owns it | always |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: held by another driver; leaving it` | Supported, a platform driver owns it (ACCESS_DENIED): printed once per controller, however often the firmware retries the connect (#22) | always, once |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: not opened for this driver (STATUS); leaving it` | Supported, the BY_DRIVER open failed with another status: once per controller | always, once |
+| `stormnic-ixgbe: LOC 8086:DDDD NAME: BY_DRIVER open refused: STATUS` | Supported, every refused attempt | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: X540\|X550\|X552\|X553 path: verified in simulation only` | Start, an X540, X550, X552 or X553 ID: the first bring-up line, once per Start (#15, #17, #23) | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: manageability veto (MMNGC.MNG_VETO): no PHY reset, AN restart or link-mode write` | Start, manageability owns the link | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: PHY/module check failed: ERROR; link left to hardware, reporting LINKS only` | Start, a step before the reset failed (e.g. `Semaphore { held: .. }`, `NoPhy`, `I2c { .. }`, `Cs4227 { .. }`, `PhyReset`) | always, after the kept steps |

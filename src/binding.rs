@@ -122,11 +122,14 @@ impl DmaRegion {
 
 pub struct IxgbeDriver {
     bound: Vec<Bound>,
+    /// Controllers already reported as held by another driver (#22): the
+    /// firmware retries ConnectController, and the line is printed once.
+    declined: crate::trace::Once,
 }
 
 impl IxgbeDriver {
     pub const fn new() -> Self {
-        IxgbeDriver { bound: Vec::new() }
+        IxgbeDriver { bound: Vec::new(), declined: crate::trace::Once::new() }
     }
 }
 
@@ -214,13 +217,34 @@ impl IxgbeDriver {
                 Ok(())
             }
             Err(e) => {
-                say!(
-                    "stormnic-ixgbe: {} 8086:{:04x} {}: already driven by another driver ({:?}); leaving it",
+                // ACCESS_DENIED is the expected answer when a platform driver
+                // holds the NIC; say it once, without the status (#22). Any
+                // other refusal keeps its status. Every attempt is a trace line.
+                trace!(
+                    "stormnic-ixgbe: {} 8086:{:04x} {}: BY_DRIVER open refused: {:?}",
                     at(location),
                     nic.device,
                     nic.name,
                     e.status()
                 );
+                if self.declined.first(controller.as_ptr() as usize) {
+                    if e.status() == Status::ACCESS_DENIED {
+                        say!(
+                            "stormnic-ixgbe: {} 8086:{:04x} {}: held by another driver; leaving it",
+                            at(location),
+                            nic.device,
+                            nic.name
+                        );
+                    } else {
+                        say!(
+                            "stormnic-ixgbe: {} 8086:{:04x} {}: not opened for this driver ({:?}); leaving it",
+                            at(location),
+                            nic.device,
+                            nic.name,
+                            e.status()
+                        );
+                    }
+                }
                 Err(e)
             }
         }
