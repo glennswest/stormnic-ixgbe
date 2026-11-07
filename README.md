@@ -68,7 +68,7 @@ would make this a GPL derivative, and it is MIT.
 
 ## Build
 
-Target `x86_64-unknown-uefi`, built on dev with `sc-build` after pushing.
+Target `x86_64-unknown-uefi`, built on a fresh build VM with `sc-build` after pushing.
 `scripts/check-driver.sh` builds the release image and checks it is an x86_64
 PE32+ with subsystem 11 (EFI boot-service driver), not 10 (application). The
 firmware unloads an application as soon as its entry point returns.
@@ -84,10 +84,27 @@ sc-build 'cargo build --release --target x86_64-unknown-uefi'
 versions (`uefi` 0.39.0, `uefi-raw` 0.15.1). Updating a dependency is a
 deliberate change to `Cargo.lock` in its own commit.
 
+The image is **byte-reproducible** (#12): the same commit gives the same
+`stormnic-ixgbe.efi`, whatever the checkout directory, target directory or
+`CARGO_HOME`. Three things made it differ, and each is handled:
+- the PE TimeDateStamp: `build.rs` links with `/Brepro`, which writes a
+  hash of the image instead of the time;
+- the CodeView debug record (PDB path and GUID): `/DEBUG:NONE` (the image
+  is stripped, and firmware never reads it);
+- absolute registry paths in the `uefi` crate's panic locations:
+  `.cargo/config.toml` runs rustc through `scripts/rustc-remap.sh`, which
+  maps each crate's source directory to `<name>-<version>`.
+
+`.cargo/config.toml` is in the checkout, so stormbootx's plain `cargo build`
+here gets the same image. `sc-build scripts/check-reproducible.sh` builds
+twice, in different directories with different `CARGO_HOME`s, and fails if
+the two images differ. On a failure it prints the PE header fields and the
+strings that appear in only one image.
+
 The image is `target/x86_64-unknown-uefi/release/stormnic-ixgbe.efi`, about
 100 KB. `build.rs` adds `/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER` to the link. The
 release profile is size-optimised (`opt-level = "z"`, LTO, `panic = "abort"`,
-stripped).
+stripped). It also adds `/Brepro` and `/DEBUG:NONE` (above).
 
 There are no configuration keys, files or ports. The driver takes no input
 apart from the PCI functions the firmware offers it and the `StormnicVerbose`
@@ -377,8 +394,8 @@ Not verified on hardware:
   polarity with an empty cage, LNK_RST on a down link), listed in the
   [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
 
-Open: the console trace is verbose on every boot (#22); the image is not
-byte-reproducible across build directories (#12). `ipxe-intelx.efi` is retired:
+The console prints one line per NIC unless verbose (#22, verified on server1),
+and the image is byte-reproducible (#12). `ipxe-intelx.efi` is retired:
 stormbootx v0.17.0 ships no iPXE, and this driver is the X9 blades' Intel
 driver on the rustnic media (#5).
 

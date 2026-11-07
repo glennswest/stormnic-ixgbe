@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-11-07
+- **build:** #12: the driver image is byte-reproducible across build directories, target directories and CARGO_HOMEs. `build.rs` links with `/Brepro` (a content-hash TimeDateStamp) and `/DEBUG:NONE` (no CodeView record, whose PDB path and GUID differed). `.cargo/config.toml` runs rustc through `scripts/rustc-remap.sh`, which adds `--remap-path-prefix=$CARGO_MANIFEST_DIR=<name>-<version>`, so the `uefi` crate's panic locations no longer embed the registry path (`trim-paths` is unstable on cargo 1.95). `scripts/check-reproducible.sh` is in the usual sc-build line. README Build section.
 - **chore:** #14 closed: the stale `needs-owner` labels removed from closed #1 and #9; the blade boot #14 asked for ran on server3 on 2026-10-01.
 - **docs:** #22 closed: the one-line-per-NIC console verified on server1 on 2026-10-30 (stormbootx#107); sc-build at 4975d5a passed 107 tests, the subsystem-11 check and the verbose build with no warnings. stormbootx#192 now asks to pin 4975d5a.
 - **fix:** #22: when a platform driver holds the NIC, Supported prints `… NAME: held by another driver; leaving it` once per controller (it was `already driven by another driver (ACCESS_DENIED); leaving it` on every connect attempt, 8 times after a warm reset on server1, and `DENIED` tripped the boot-log review, stormcos_qa#71). A refusal with any other status prints `not opened for this driver (STATUS)` once. Every attempt and its status is a verbose trace line. `trace::Once`, 1 new test; README console table.

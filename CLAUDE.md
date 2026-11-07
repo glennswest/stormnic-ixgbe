@@ -33,6 +33,7 @@ scratch files go in `tmp/`.
 
 ```bash
 sc-build scripts/check-driver.sh   # build + check PE32+ subsystem 11
+sc-build scripts/check-reproducible.sh   # two builds in different dirs/CARGO_HOMEs are byte-identical (#12)
 sc-build 'cargo build --release --target x86_64-unknown-uefi'
 ```
 

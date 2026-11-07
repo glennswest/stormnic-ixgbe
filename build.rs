@@ -9,7 +9,11 @@
 //!
 //! `/Brepro` (#12): lld-link writes a hash of the image instead of the time
 //! as the PE TimeDateStamp, and a content hash as the PDB GUID (random
-//! otherwise), so two builds of the same source are byte-identical.
+//! otherwise). `/DEBUG:NONE`: no CodeView debug record, whose PDB path and
+//! GUID still differed between build directories under /Brepro. The image is
+//! stripped anyway and firmware never reads it. With the rustc wrapper in
+//! `.cargo/config.toml`, two builds of the same source are byte-identical
+//! wherever they run (`scripts/check-reproducible.sh`).
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -17,5 +21,6 @@ fn main() {
     if target.ends_with("-uefi") {
         println!("cargo:rustc-link-arg-bins=/SUBSYSTEM:EFI_BOOT_SERVICE_DRIVER");
         println!("cargo:rustc-link-arg-bins=/Brepro");
+        println!("cargo:rustc-link-arg-bins=/DEBUG:NONE");
     }
 }
