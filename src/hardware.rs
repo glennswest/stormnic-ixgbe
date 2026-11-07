@@ -78,7 +78,7 @@ pub enum Error<E> {
     NoInitSequence { key: u16 },
     /// 82599: the AN state (ANLP1 19:16) never left 0 in a pipeline reset (spec 5.4).
     PipelineReset,
-    /// A frame outside 14..=1518 bytes to send, or a received frame longer
+    /// A frame outside 14..=9018 bytes (`rings::MAX_FRAME`) to send, or a received frame longer
     /// than the caller's buffer (its length; it stays queued).
     FrameLength { len: usize },
 }

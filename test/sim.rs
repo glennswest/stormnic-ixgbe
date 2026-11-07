@@ -24,6 +24,7 @@ pub const TXDCTL: u32 = 0x6028;
 pub const RDRXCTL: u32 = 0x2f00;
 pub const RXCTRL: u32 = 0x3000;
 pub const HLREG0: u32 = 0x4240;
+pub const MAXFRS: u32 = 0x4268;
 pub const DMATXCTL: u32 = 0x4a80;
 pub const FCTRL: u32 = 0x5080;
 pub const MTA: u32 = 0x5200;
@@ -52,6 +53,9 @@ pub struct Nic {
     pub inbound: Vec<Vec<u8>>,
     pub wire: Vec<Vec<u8>>,
     pub dropped: usize,
+    /// Frames over the MAC's limit (ROC): MFS when HLREG0.JUMBOEN, else 1518,
+    /// 4 more when VLAN tagged; lengths with the CRC the wire adds.
+    pub oversize: usize,
     pub delays: usize,
 }
 
@@ -59,12 +63,14 @@ impl Nic {
     pub fn new(mem: &mut Vec<u8>) -> Self {
         Nic {
             regs: BTreeMap::from([(CTRL, 1 << 2), (HLREG0, 1 << 0 | 1 << 10), (RDRXCTL, 1 << 3), (0x5088, 1 << 30),
+                // MAXFRS.MFS at its reset value, 1518 (with CRC).
+                (MAXFRS, 1518 << 16),
                 // RAR0 as the NVM loads it (AV set); LINKS up at 10G.
                 (RAL0, u32::from_le_bytes([MAC[0], MAC[1], MAC[2], MAC[3]])),
                 (RAH0, u32::from(u16::from_le_bytes([MAC[4], MAC[5]])) | 1 << 31),
                 (LINKS, 1 << 30 | 3 << 28)]),
             ops: vec![], mem: mem.as_mut_ptr(), loopback: false, hold_tx: false, stuck: None,
-            inbound: vec![], wire: vec![], dropped: 0, delays: 0,
+            inbound: vec![], wire: vec![], dropped: 0, oversize: 0, delays: 0,
         }
     }
     pub fn reg(&self, r: u32) -> u32 { *self.regs.get(&r).unwrap_or(&0) }
@@ -98,6 +104,13 @@ impl Nic {
 
     /// Receive one frame into the ring, or drop it (filter, RX off, ring full).
     pub fn deliver(&mut self, frame: &[u8]) {
+        let tag = if frame[12..14] == [0x81, 0x00] { 4 } else { 0 };
+        let limit = if self.reg(HLREG0) & 1 << 2 != 0 { (self.reg(MAXFRS) >> 16) as usize } else { 1518 };
+        if frame.len() + 4 > limit + tag {
+            self.oversize += 1;
+            return;
+        }
+        assert!(frame.len() <= BUF_SIZE, "a {}-byte frame would span descriptors", frame.len());
         let f = self.reg(FCTRL);
         let d = &frame[..6];
         let broadcast = d == [0xff; 6];

@@ -107,7 +107,8 @@ fn transmit_checks_its_parameters() {
     assert_eq!(s.transmit(&mut nic, 12, &mut [0; 60], None, Some(OTHER), Some(0x800), t), Err(Fail::InvalidParameter));
     assert_eq!(s.transmit(&mut nic, 14, &mut [0; 10], None, Some(OTHER), Some(0x800), t), Err(Fail::BufferTooSmall(14)));
     assert_eq!(s.transmit(&mut nic, 0, &mut [0; 10], None, None, None, t), Err(Fail::BufferTooSmall(14)));
-    assert_eq!(s.transmit(&mut nic, 0, &mut [0; 1519], None, None, None, t), Err(Fail::InvalidParameter));
+    assert_eq!(s.transmit(&mut nic, 0, &mut [0; 9019], None, None, None, t), Err(Fail::InvalidParameter));
+    assert_eq!(s.transmit(&mut nic, 14, &mut [0; 9019], None, Some(OTHER), Some(0x800), t), Err(Fail::InvalidParameter));
     assert!(nic.wire.is_empty());
     // A complete frame (header 0) goes as given; a short one is padded by the MAC.
     let mut f = frame(OTHER, 1, 42);
@@ -149,6 +150,25 @@ fn receive_fills_header_fields_and_keeps_a_frame_too_big_for_the_buffer() {
     assert_eq!(u16::from_be_bytes([buf[14], buf[15]]), 5);
     assert_eq!(s.receive(&mut nic, &mut buf), Err(Fail::NotReady));
     assert!(!s.frame_waiting(&mut nic));
+}
+
+#[test]
+fn jumbo_payload_of_max_packet_round_trips_and_a_1514_buffer_is_too_small() {
+    assert_eq!(snp::MAX_PACKET, 9000, "Mode.MaxPacketSize (#33)");
+    let (_mem, mut nic, mut s) = up();
+    nic.loopback = true;
+    // MaxPacketSize + MediaHeaderSize, header filled by the driver.
+    let mut out = vec![0u8; snp::HEADER + snp::MAX_PACKET];
+    for (i, b) in out[14..].iter_mut().enumerate() { *b = i as u8; }
+    s.transmit(&mut nic, 14, &mut out, None, Some(MAC), Some(0x0800), 1).unwrap();
+    assert_eq!(nic.wire[0].len(), 9014);
+    // stormbootx starts at 1514 and grows its buffer on BUFFER_TOO_SMALL.
+    let mut small = vec![0u8; 1514];
+    assert_eq!(s.receive(&mut nic, &mut small), Err(Fail::BufferTooSmall(9014)));
+    let mut buf = vec![0u8; 9014];
+    let r = s.receive(&mut nic, &mut buf).unwrap();
+    assert_eq!((r.len, r.destination, r.source, r.protocol), (9014, MAC, MAC, 0x0800));
+    assert_eq!(buf, out);
 }
 
 #[test]

@@ -4,7 +4,7 @@
 mod hardware;
 #[allow(dead_code)]
 mod sim;
-use hardware::rings::{self, Filter, BUF_SIZE, RX_DESCS, TX_DESCS};
+use hardware::rings::{self, Filter, BUF_SIZE, MAX_FRAME, RX_DESCS, TX_DESCS};
 use hardware::Error;
 use sim::*;
 
@@ -15,10 +15,12 @@ fn start_programs_queue_0_from_the_datasheet_sequence() {
     assert_eq!(nic.ops.iter().filter(|(r, v)| (MTA..MTA + 512).contains(r) && *v == 0).count(), 128);
     assert_eq!(nic.reg(0x5088) & (1 << 30), 0, "VLAN filter off");
     assert_eq!(nic.reg(FCTRL), 1 << 10, "broadcast accepted, not promiscuous");
-    assert_eq!(nic.reg(HLREG0), 1 << 0 | 1 << 1 | 1 << 10, "RX CRC strip, TX CRC and pad kept");
+    assert_eq!(nic.reg(HLREG0), 1 << 0 | 1 << 1 | 1 << 2 | 1 << 10, "RX CRC strip, JUMBOEN, TX CRC and pad kept");
+    assert_eq!(nic.reg(MAXFRS), 9022 << 16, "MFS: 9000 + header + VLAN tag + CRC");
+    assert!(pos(&nic, (MAXFRS, 9022 << 16)) < pos(&nic, (HLREG0, nic.reg(HLREG0))), "MFS before JUMBOEN");
     assert_eq!(nic.reg(RDRXCTL), 1 << 3 | 1 << 1, "CRCSTRIP matches HLREG0");
     assert_eq!((nic.reg(RDBAL), nic.reg(RDBAH), nic.reg(RDLEN)), (0x2345_0000, 1, 512));
-    assert_eq!(nic.reg(SRRCTL), 1 << 28 | 2, "2 KB buffers, legacy, drop when full");
+    assert_eq!(nic.reg(SRRCTL), 1 << 28 | 9, "9 KB buffers, legacy, drop when full");
     assert_eq!((nic.reg(RDH), nic.reg(RDT)), (0, RX_DESCS as u32 - 1));
     assert_eq!((nic.reg(TDBAL), nic.reg(TDBAH), nic.reg(TDLEN)), (0x2345_0200, 1, 512));
     assert_eq!((nic.reg(TDH), nic.reg(TDT)), (0, 0));
@@ -148,13 +150,13 @@ fn errored_and_multi_buffer_frames_are_dropped() {
 fn frame_lengths_are_checked_and_a_short_buffer_keeps_the_frame() {
     let (_mem, mut nic, mut rings) = started();
     assert_eq!(rings.transmit(&mut nic, &[0; 13]), Err(Error::FrameLength { len: 13 }));
-    assert_eq!(rings.transmit(&mut nic, &[0; 1519]), Err(Error::FrameLength { len: 1519 }));
-    assert_eq!(rings.transmit(&mut nic, &frame([0xff; 6], 0, 1518)), Ok(true));
-    nic.deliver(&frame(MAC, 7, 1514));
-    let mut small = [0u8; 100];
-    assert_eq!(rings.receive(&mut nic, &mut small), Err(Error::FrameLength { len: 1514 }));
+    assert_eq!(rings.transmit(&mut nic, &[0; 9019]), Err(Error::FrameLength { len: 9019 }));
+    assert_eq!(rings.transmit(&mut nic, &frame([0xff; 6], 0, 9018)), Ok(true));
+    nic.deliver(&frame(MAC, 7, 9014));
+    let mut small = [0u8; 1514];
+    assert_eq!(rings.receive(&mut nic, &mut small), Err(Error::FrameLength { len: 9014 }));
     let mut buf = [0u8; BUF_SIZE];
-    assert_eq!(rings.receive(&mut nic, &mut buf).unwrap(), Some(1514));
+    assert_eq!(rings.receive(&mut nic, &mut buf).unwrap(), Some(9014));
     assert_eq!(u16::from_be_bytes([buf[14], buf[15]]), 7);
 }
 
@@ -220,4 +222,46 @@ fn broadcast_is_filtered_unless_enabled_and_filters_are_independent() {
     assert_eq!(nic.reg(FCTRL), 1 << 10 | 1 << 8 | 1 << 9);
     rings.set_filter(&mut nic, Filter { all_multicast: true, ..Filter::default() }).unwrap();
     assert_eq!(nic.reg(FCTRL), 1 << 8);
+}
+
+/// A tagged copy of `frame`: 802.1Q tag (VID 5) after the source address.
+fn tagged(f: &[u8]) -> Vec<u8> {
+    let mut t = f[..12].to_vec();
+    t.extend_from_slice(&[0x81, 0x00, 0x00, 0x05]);
+    t.extend_from_slice(&f[12..]);
+    t
+}
+
+#[test]
+fn jumbo_frames_round_trip_and_the_mac_limit_is_mfs() {
+    let (_mem, mut nic, mut rings) = started();
+    nic.loopback = true;
+    assert_eq!((MAX_FRAME, rings::MFS), (9018, 9022));
+    assert!(BUF_SIZE >= rings::MFS, "a tagged frame at MFS + 4 (no CRC) fits one buffer");
+    // A 9000-byte payload, untagged (9014) and tagged (9018), both ways.
+    let plain = frame(MAC, 1, 9014);
+    let vlan = tagged(&frame(MAC, 2, 9014));
+    assert_eq!(vlan.len(), MAX_FRAME);
+    let mut buf = [0u8; BUF_SIZE];
+    for f in [&plain, &vlan] {
+        assert_eq!(rings.transmit(&mut nic, f), Ok(true));
+        assert_eq!(rings.receive(&mut nic, &mut buf).unwrap(), Some(f.len()));
+        assert_eq!(&buf[..f.len()], &f[..]);
+    }
+    assert_eq!(nic.wire, vec![plain, vlan]);
+    // The MAC's limit: 9018 untagged (9022 with CRC) passes, 9019 does not.
+    nic.deliver(&frame(MAC, 3, 9018));
+    nic.deliver(&frame(MAC, 4, 9019));
+    assert_eq!(nic.oversize, 1);
+    assert_eq!(rings.receive(&mut nic, &mut buf).unwrap(), Some(9018));
+    assert_eq!(rings.receive(&mut nic, &mut buf).unwrap(), None);
+}
+
+#[test]
+fn without_start_the_mac_keeps_the_1518_limit() {
+    // The simulated reset state: JUMBOEN off, MFS 1518. `start` is what
+    // lets jumbo frames in, so a restart after a reset gets them again.
+    let (_mem, mut nic, _rings) = setup();
+    nic.deliver(&frame(MAC, 1, 1515));
+    assert_eq!(nic.oversize, 1);
 }

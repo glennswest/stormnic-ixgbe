@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-11-07
+- **feat:** #33, jumbo frames: the SNP reports MaxPacketSize 9000 (was 1500). `Rings::start` sets MAXFRS.MFS to 9022 (9000 + header + VLAN tag + CRC) and HLREG0.JUMBOEN, and the RX/TX buffers are 9 KB (SRRCTL.BSIZEPACKET 9), so a frame never spans descriptors; the DMA region is 145 pages (was 33). Transmit takes frames up to 9018 bytes (longer: INVALID_PARAMETER); Receive returns BUFFER_TOO_SMALL with the length when the caller's buffer is short, as before. stormbootx (stormbootx#165) runs each NIC at min(DHCP option 26, else 1500; MaxPacketSize), so nothing sends over the network's MTU. The simulated NIC now drops frames over the MAC's limit (MFS with JUMBOEN, else 1518; 4 more tagged); 3 new tests. docs/rings.md, docs/snp.md and README updated.
+
 ### 2026-10-06
 - **fix:** #8: the `uefi` crate's `log` output is capped at WARN (INFO when verbose) right after `uefi::helpers::init()`, so a dependency's DEBUG/TRACE can't reach the boot console; warnings, errors and panics still do. `log` 0.4 is now a direct dependency (already locked through `uefi`, same version). README "Console output" says so.
 - **docs:** #22: waiting on a blade boot of the rustnic media at 728b328 (stormbootx#101 built it; no blade has booted it yet); requested in stormbootx#107, and #22 proposed after it.

@@ -196,7 +196,9 @@ driver on its media, then calls the binding for each controller:
      opens the controller's PciIo BY_CHILD_CONTROLLER. stormbootx opens the
      child's SNP `EXCLUSIVE` and drives it with smoltcp (on other firmware
      paths the firmware's MNP may bind to it); the SNP's Initialize starts
-     the queues. An
+     the queues. MaxPacketSize is 9000 (jumbo frames, #33: HLREG0.JUMBOEN,
+     MAXFRS.MFS 9022, 9 KB receive buffers); stormbootx runs the NIC at
+     DHCP option 26, or 1500 without it. An
      ExitBootServices event stops them again. See
      [Simple Network Protocol](docs/snp.md).
 
@@ -315,7 +317,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (10 on X553 1G copper, 100, 1000, 2500 from the X550 on, 5000 on X550, or 10000) | verbose (the summary line has it) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link up, speed encoding reserved` | Start, link up with a reserved speed field | verbose (the summary line has it) |
 | `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise); the raw registers at the end of the wait, to tell a dead cable or partner (no signal detect, no PCS sync in LINKS) from a setup problem (#26) | verbose (the summary line has it) |
-| `stormnic-ixgbe: LOC 8086:DDDD: DMA: 33 pages at device 0xX, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors` | Start, DMA region mapped | verbose |
+| `stormnic-ixgbe: LOC 8086:DDDD: DMA: 145 pages at device 0xX, RX 32 x 9216 B, TX 32 x 9216 B, legacy descriptors` | Start, DMA region mapped | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA region not mapped: STATUS; releasing` | Start, AllocateBuffer or Map failed (returns DEVICE_ERROR) | always, after the kept steps |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA check: broadcast frame sent, 60 bytes\|not sent within 100 ms (GPTC N)` | Start, link up | always when not sent, else verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA check: received N frame(s) after M ms (GPRC N), first L bytes from MAC to MAC type TTTT` | Start, link up, a frame arrived | verbose |

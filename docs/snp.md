@@ -58,7 +58,7 @@ attribute and command-register changes and closes PciIo BY_DRIVER.
 | Field | Value |
 |---|---|
 | State | Stopped, Started or Initialized, after every call |
-| HwAddressSize, MediaHeaderSize, MaxPacketSize | 6, 14, 1500 |
+| HwAddressSize, MediaHeaderSize, MaxPacketSize | 6, 14, 9000 (jumbo frames, #33; SNP has no call to set an MTU, so the consumer picks one up to this: stormbootx uses DHCP option 26, else 1500) |
 | NvRamSize, NvRamAccessSize | 0, 0 |
 | ReceiveFilterMask | 0x1f: unicast, multicast, broadcast, promiscuous, promiscuous multicast |
 | ReceiveFilterSetting | the enabled bits |
@@ -90,8 +90,8 @@ but uninitialized interface return DEVICE_ERROR.
 | MCastIpToMac | IPv4 224.0.0.0/4 to 01:00:5e + the low 23 bits; IPv6 ff00::/8 to 33:33 + the low 32 bits; anything else INVALID_PARAMETER |
 | NvData | UNSUPPORTED |
 | GetStatus | Reclaims sent descriptors and reads LINKS into MediaPresent. InterruptStatus: RECEIVE if a frame is waiting, TRANSMIT if one went out since the last call. TxBuf: the oldest transmitted buffer not yet handed back, or NULL. Either pointer may be NULL |
-| Transmit | Frames up to 1518 bytes (1514 plus a VLAN tag). With HeaderSize 14 the header is filled in the caller's buffer: destination and protocol required, source defaulting to the station address. The frame is copied into a ring buffer, and the caller's buffer is queued for GetStatus. NOT_READY when the ring (31 frames) or the recycle queue (64 buffers) is full |
-| Receive | The next frame the filters pass: its length, header size 14, source, destination and protocol. BUFFER_TOO_SMALL sets `*BufferSize` to the frame's length and leaves the frame queued. NOT_READY when nothing is waiting |
+| Transmit | Frames up to 9018 bytes (MaxPacketSize + MediaHeaderSize, plus a VLAN tag); a longer one is INVALID_PARAMETER. With HeaderSize 14 the header is filled in the caller's buffer: destination and protocol required, source defaulting to the station address. The frame is copied into a ring buffer, and the caller's buffer is queued for GetStatus. NOT_READY when the ring (31 frames) or the recycle queue (64 buffers) is full |
+| Receive | The next frame the filters pass: its length, header size 14, source, destination and protocol. BUFFER_TOO_SMALL sets `*BufferSize` to the frame's length (up to 9018) and leaves the frame queued. NOT_READY when nothing is waiting |
 
 WaitForPacket is signalled when its check finds a frame the filters pass.
 

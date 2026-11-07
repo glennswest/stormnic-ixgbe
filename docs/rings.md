@@ -25,12 +25,19 @@ and layouts for queue 0. None of this came from another driver.
   |---|---|
   | 0 | RX ring: 32 legacy descriptors of 16 B (RDBAL is 128-byte aligned) |
   | 512 | TX ring: 32 legacy descriptors of 16 B |
-  | 4096 | 32 RX buffers of 2 KB |
-  | 69632 | 32 TX buffers of 2 KB |
+  | 4096 | 32 RX buffers of 9 KB |
+  | 299008 | 32 TX buffers of 9 KB |
 
-- **Legacy descriptors.** SRRCTL.DESCTYPE is 000. One 2 KB buffer holds any
-  frame up to the default MAXFRS (1518 with CRC, plus a VLAN tag), so a frame
-  never spans descriptors. A descriptor without EOP, or with the CE or RXE
+  593,920 bytes in all: 145 pages.
+
+- **Legacy descriptors.** SRRCTL.DESCTYPE is 000. One 9 KB buffer holds any
+  frame the MAC lets in (MAXFRS.MFS 9022 with CRC, plus a VLAN tag), so a
+  frame never spans descriptors.
+- **Jumbo frames (#33).** HLREG0.JUMBOEN is set and MAXFRS.MFS is 9022: a
+  9000-byte payload, the 14-byte header, a VLAN tag and the CRC. Without
+  JUMBOEN the MAC drops anything over 1518. Nothing sends a frame larger than
+  the network's MTU: the SNP reports MaxPacketSize 9000 and stormbootx caps
+  it at DHCP option 26, or 1500 without one. A descriptor without EOP, or with the CE or RXE
   error bits, is dropped and handed back.
 - **Polled.** Interrupts stay masked, as the reset left them. Whatever drives the SNP
   (stormbootx's smoltcp) polls it.
@@ -44,11 +51,12 @@ and layouts for queue 0. None of this came from another driver.
 2. Zero the 128 MTA entries. Clear VLNCTRL.VFE, so there's no VLAN filtering.
    Set FCTRL: BAM for broadcast, MPE for all-multicast, UPE for promiscuous,
    as requested. RAR0 (the NVM MAC, AV set by the reset) always passes.
-3. CRC strip: HLREG0.RXCRCSTRP and RDRXCTL.CRCSTRIP, which must agree. TX
+3. MAXFRS.MFS = 9022 (bits 31:16; the low half kept), then HLREG0.JUMBOEN.
+   CRC strip: HLREG0.RXCRCSTRP and RDRXCTL.CRCSTRIP, which must agree. TX
    CRC insertion and short-frame padding (HLREG0.TXCRCEN/TXPADEN) keep their
    reset values (on).
 4. RX queue 0: every descriptor gets its buffer address and a cleared
-   status. Program RDBAL/RDBAH, RDLEN = 512 and SRRCTL (BSIZEPACKET 2 KB,
+   status. Program RDBAL/RDBAH, RDLEN = 512 and SRRCTL (BSIZEPACKET 9 KB,
    legacy, DROP_EN), and set RDH = RDT = 0. Set RXDCTL.ENABLE and poll it
    back (10 ms), then write RDT = 31: the NIC owns every descriptor but one.
    Finally set RXCTRL.RXEN.
@@ -63,7 +71,7 @@ the rest of a written-back descriptor.
 
 ## Transmit, receive, stop
 
-- `transmit(frame)`: 14 to 1518 bytes without CRC. It is copied into the
+- `transmit(frame)`: 14 to 9018 bytes without CRC. It is copied into the
   next TX buffer and the descriptor is written (length, CMD = EOP | IFCS |
   RS), then TDT is bumped. It returns `false` when the ring is full: 31
   frames outstanding.
@@ -134,7 +142,7 @@ the OFFER is the answer.
 Expected SOL lines (the X9 blades' ports; the address differs per blade) after `link up 10000 Mb/s`, in a verbose boot (#22: these are trace lines; see README, "Console output"):
 
 ```
-stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA: 33 pages at device 0x…, RX 32 x 2048 B, TX 32 x 2048 B, legacy descriptors
+stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA: 145 pages at device 0x…, RX 32 x 9216 B, TX 32 x 9216 B, legacy descriptors
 stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA check: broadcast frame sent, 60 bytes (GPTC 1)
 stormnic-ixgbe: 0000:03:00.0 8086:1557: DMA check: received N frame(s) after M ms (GPRC N), first L bytes from … to ff:ff:ff:ff:ff:ff type 0806
   (or: DMA check: received nothing in 3000 ms (GPRC N))

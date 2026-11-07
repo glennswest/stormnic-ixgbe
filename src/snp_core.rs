@@ -14,9 +14,12 @@
 use super::rings::{Filter, Rings, MAX_FRAME, MIN_FRAME};
 use super::{link, read, write, Error, Family, Link, Registers};
 
-/// Ethernet: header size, largest payload.
+/// Ethernet: header size, largest payload (Mode.MaxPacketSize). 9000 for
+/// jumbo frames (#33): SNP has no call to set an MTU, so this is the most a
+/// consumer may use; stormbootx caps it at DHCP option 26, else 1500.
 pub const HEADER: usize = 14;
-pub const MAX_PACKET: usize = 1500;
+pub const MAX_PACKET: usize = 9000;
+const _: () = assert!(HEADER + MAX_PACKET + 4 == super::rings::MAX_FRAME);
 /// Multicast addresses ReceiveFilters takes (Mode.MCastFilter has 16 slots).
 pub const MAX_MCAST: usize = 16;
 /// Transmitted buffers waiting for GetStatus; Transmit is NOT_READY when full.

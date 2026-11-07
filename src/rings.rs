@@ -6,8 +6,8 @@
 //! DMA region (host pointer and the device address the NIC uses for it,
 //! mapped as a common buffer) and firmware Stall through `Registers`.
 //!
-//! One RX and one TX queue (queue 0), legacy descriptors, 2 KB buffers owned
-//! by the driver. Frames are copied in and out of those buffers, so no caller
+//! One RX and one TX queue (queue 0), legacy descriptors, 9 KB buffers owned
+//! by the driver (jumbo frames, #33: a 9000-byte payload fits one buffer). Frames are copied in and out of those buffers, so no caller
 //! memory is ever mapped for DMA. CRC is stripped on receive and added and
 //! padded to 64 bytes on transmit by the MAC.
 //!
@@ -21,8 +21,10 @@ use core::sync::atomic::{fence, Ordering};
 
 pub const RX_DESCS: usize = 32;
 pub const TX_DESCS: usize = 32;
-/// Buffer size: SRRCTL.BSIZEPACKET is in 1 KB units.
-pub const BUF_SIZE: usize = 2048;
+/// Buffer size: SRRCTL.BSIZEPACKET is in 1 KB units. 9 KB holds the
+/// largest frame MAXFRS lets in (`MAX_FRAME`, or 4 more when tagged), so a
+/// frame never spans descriptors.
+pub const BUF_SIZE: usize = 9 * 1024;
 const RX_RING: usize = 0;
 const TX_RING: usize = 512;
 const RX_BUFS: usize = 4096;
@@ -30,9 +32,12 @@ const TX_BUFS: usize = RX_BUFS + RX_DESCS * BUF_SIZE;
 pub const DMA_BYTES: usize = TX_BUFS + TX_DESCS * BUF_SIZE;
 pub const DMA_PAGES: usize = DMA_BYTES.div_ceil(4096);
 
-/// Largest frame without CRC: 1514 plus a 4-byte VLAN tag. The default
-/// MAXFRS.MFS is 1518 with CRC, and the MAC allows a tagged frame 4 more.
-pub const MAX_FRAME: usize = 1518;
+/// Largest frame without CRC: a 9000-byte payload, the 14-byte header and a
+/// 4-byte VLAN tag (#33). `start` sets HLREG0.JUMBOEN and MAXFRS.MFS to this
+/// plus the CRC, so the MAC passes it tagged or not.
+pub const MAX_FRAME: usize = 9018;
+/// MAXFRS.MFS (bits 31:16): the largest frame the MAC passes, CRC included.
+pub const MFS: usize = MAX_FRAME + 4;
 /// Ethernet header: the smallest frame the driver will send.
 pub const MIN_FRAME: usize = 14;
 
@@ -56,6 +61,7 @@ const DMATXCTL: u32 = 0x04a80;
 const FCTRL: u32 = 0x05080;
 const VLNCTRL: u32 = 0x05088;
 const MTA: u32 = 0x05200;
+pub const MAXFRS: u32 = 0x04268;
 pub const GPRC: u32 = 0x04074;
 pub const GPTC: u32 = 0x04080;
 
@@ -65,11 +71,13 @@ const RXEN: u32 = 1 << 0;
 const TE: u32 = 1 << 0;
 /// HLREG0.RXCRCSTRP and RDRXCTL.CRCSTRIP must agree.
 const CRC_STRIP: u32 = 1 << 1;
+/// HLREG0.JUMBOEN: frames up to MAXFRS.MFS instead of 1518.
+pub const JUMBOEN: u32 = 1 << 2;
 const FCTRL_BAM: u32 = 1 << 10;
 const FCTRL_MPE: u32 = 1 << 8;
 const FCTRL_UPE: u32 = 1 << 9;
 const VLNCTRL_VFE: u32 = 1 << 30;
-/// SRRCTL: BSIZEPACKET 2 (KB), DESCTYPE 000 (legacy), DROP_EN.
+/// SRRCTL: BSIZEPACKET 9 (KB), DESCTYPE 000 (legacy), DROP_EN.
 const SRRCTL_VALUE: u32 = (BUF_SIZE / 1024) as u32 | 1 << 28;
 
 // Legacy descriptor fields (byte offsets in the 16-byte descriptor).
@@ -168,8 +176,11 @@ impl Rings {
         let vln = read(io, VLNCTRL)?;
         write(io, VLNCTRL, vln & !VLNCTRL_VFE)?;
         self.set_filter(io, filter)?;
+        // Jumbo frames (#33): MFS first, then JUMBOEN with the CRC strip.
+        let mfs = read(io, MAXFRS)?;
+        write(io, MAXFRS, (mfs & 0xffff) | (MFS as u32) << 16)?;
         let hl = read(io, HLREG0)?;
-        write(io, HLREG0, hl | CRC_STRIP)?;
+        write(io, HLREG0, hl | CRC_STRIP | JUMBOEN)?;
         let rdr = read(io, RDRXCTL)?;
         write(io, RDRXCTL, rdr | CRC_STRIP)?;
 
