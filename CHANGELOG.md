@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-11-07
+- **chore:** #14 closed: the stale `needs-owner` labels removed from closed #1 and #9; the blade boot #14 asked for ran on server3 on 2026-10-01.
 - **docs:** #22 closed: the one-line-per-NIC console verified on server1 on 2026-10-30 (stormbootx#107); sc-build at 4975d5a passed 107 tests, the subsystem-11 check and the verbose build with no warnings. stormbootx#192 now asks to pin 4975d5a.
 - **fix:** #22: when a platform driver holds the NIC, Supported prints `… NAME: held by another driver; leaving it` once per controller (it was `already driven by another driver (ACCESS_DENIED); leaving it` on every connect attempt, 8 times after a warm reset on server1, and `DENIED` tripped the boot-log review, stormcos_qa#71). A refusal with any other status prints `not opened for this driver (STATUS)` once. Every attempt and its status is a verbose trace line. `trace::Once`, 1 new test; README console table.
 - **docs:** #26 still parked until server3's replacement transceivers/cables are fitted (owner, 2026-10-09); server3's SOL still shows only old-media link-down boots. Work plan updated.
