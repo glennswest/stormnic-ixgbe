@@ -4,6 +4,7 @@
 
 ### 2026-11-07
 - **fix:** the simulated-test build had 95 dead-code warnings: `test/hardware.rs` includes `src/hardware.rs` without the `#[allow(dead_code)]` the other test crates use (the rings/SNP items it does not exercise). Added.
+- **docs:** #33: sc-build at 4b4813d passed (106 tests, subsystem-11 check 120,832 bytes, verbose build, 0 warnings); stormbootx#192 asks to pin 4b4813d on the rustnic media for the metal check, and #33 is proposed after it.
 - **feat:** #33, jumbo frames: the SNP reports MaxPacketSize 9000 (was 1500). `Rings::start` sets MAXFRS.MFS to 9022 (9000 + header + VLAN tag + CRC) and HLREG0.JUMBOEN, and the RX/TX buffers are 9 KB (SRRCTL.BSIZEPACKET 9), so a frame never spans descriptors; the DMA region is 145 pages (was 33). Transmit takes frames up to 9018 bytes (longer: INVALID_PARAMETER); Receive returns BUFFER_TOO_SMALL with the length when the caller's buffer is short, as before. stormbootx (stormbootx#165) runs each NIC at min(DHCP option 26, else 1500; MaxPacketSize), so nothing sends over the network's MTU. The simulated NIC now drops frames over the MAC's limit (MFS with JUMBOEN, else 1518; 4 more tagged); 3 new tests. docs/rings.md, docs/snp.md and README updated.
 
 ### 2026-10-06
