@@ -1,0 +1,7 @@
+# Byte-reproducible driver image (#12): every rustc call goes through
+# scripts/rustc-remap.sh, which maps each crate's source directory to
+# `<name>-<version>`, so no absolute path (a registry under CARGO_HOME)
+# reaches the image. The path is relative to this directory's parent, so it
+# also applies to stormbootx's `cargo build` in this checkout.
+[build]
+rustc-wrapper = "scripts/rustc-remap.sh"
