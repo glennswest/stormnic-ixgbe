@@ -44,7 +44,7 @@ No configuration, ports or APIs; the console lines are listed in README.md.
 In stormbootx's `\stormboot\drivers`. Not a stormcentral component (no golden
 of its own). stormbootx builds it `--locked` from a pinned commit
 (`STORMNIC_IXGBE_REF` in its `scripts/build-nic-drivers.sh`, stormbootx#29,
-#43; 563ea8d at this writing, b240082 asked in stormbootx#101). Since
+#43; 4b4813d at this writing (stormbootx v0.39.2), 232790c asked in stormbootx#194). Since
 stormbootx v0.17.0 there is no iPXE on any medium (#5, stormbootx#81, #91):
 the `nic-drivers` golden holds `stormnic-ixgbe.efi` and `stormnic-mlx4.efi`,
 the `stormbootx-rustnic` media loads both (the X9 blades' medium), and the
@@ -52,7 +52,7 @@ the `stormbootx-rustnic` media loads both (the X9 blades' medium), and the
 
 ## Test
 
-`sc-build scripts/test-hardware.sh` runs the simulated tests (92 at ed9b719).
+`sc-build scripts/test-hardware.sh` runs the simulated tests (107 at 232790c).
 On metal: file a stormbootx issue to pin the new commit and build the
 rustnic golden, propose this issue after it, and the master boots a blade
 from that golden (it holds the BMC and console access). The Intel test

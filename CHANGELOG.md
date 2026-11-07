@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-11-07
+- **docs:** refreshed from the code since 2026-10-12: README (NOTICE is an acknowledgement, not Intel's notice, #30; the rustnic pin is 4b4813d with 232790c asked in stormbootx#194, #32; 107 simulated tests; jumbo status) and CLAUDE.md (pin, test count). Jumbo, one-line console and reproducible-image text already matched the code.
 - **docs:** #33: stormbootx v0.39.2 pins 4b4813d on the rustnic media (stormbootx#192); the metal check (server1 at MTU 9000) is handed to the master with `wait-hardware`. 232790c (#8, #12, #22) asked separately in stormbootx#194.
 - **docs:** #8 closed: the blades' SOL captures have no `uefi`-crate log line in 56 driver starts since 85a1c2a (only the 2026-09-28 scaffold boot's 4); the WARN cap (ff195b6) ships with stormbootx#192's pin.
 - **docs:** #12 closed: two sc-build jobs at 232790c gave six byte-identical images (sha256 a653dd12…); filed stormnic-mlx4#28; stormbootx#192 now asks to pin 232790c.

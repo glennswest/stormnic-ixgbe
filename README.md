@@ -59,7 +59,8 @@ Controller X540 Datasheet; Intel X552 (Xeon D) datasheet, for reset and the
 NVM MAC. PHY and link programming follows **`docs/spec/phy.md`**, an
 independent specification written by an agent that does not write this
 driver, from Intel's own shared ixgbe code as Intel publishes it under
-BSD-3-Clause (FreeBSD `sys/dev/ixgbe`). `NOTICE` carries Intel's notice; see
+BSD-3-Clause (FreeBSD `sys/dev/ixgbe`). `NOTICE` acknowledges that source (no
+code was copied; Intel's notice text is kept in the bring-up notes); see
 the [bring-up notes](docs/bring-up.md#phy-and-link-programming-per-the-spec-13-2026-09-29).
 
 **Written from the vendor documentation, not translated from iPXE or Linux.**
@@ -120,8 +121,11 @@ builds it from a pinned commit (stormbootx#29, done 2026-09-28):
 `scripts/build-nic-drivers.sh` there fetches this repo at
 `STORMNIC_IXGBE_REF` and runs `cargo build --locked --release --target
 x86_64-unknown-uefi` (stormbootx#43), checks subsystem 11, and records the
-commit and digest in `STORMNIC-SOURCE.txt`. At this writing the pin is
-563ea8d.
+commit and digest in `STORMNIC-SOURCE.txt`. At this writing the rustnic
+media pins 4b4813d (stormbootx v0.39.2, stormbootx#192: jumbo frames, #33);
+232790c (the one-line console, #22, and the reproducible image, #12) is asked
+in stormbootx#194. The pin moves with each stormbootx release; the media's
+`media : rustnic ixgbe@<sha>` line shows the one in use.
 
 Since stormbootx v0.17.0 (stormbootx#52, #91; the owner's answer on
 stormbootx#81: no iPXE) there are two media and no iPXE anywhere:
@@ -381,7 +385,7 @@ and claimed boothost/server3. The SOL log is quoted in
 [docs/snp.md](docs/snp.md#hardware-check-the-acceptance-for-4). The first
 boot (#7) bound 8086:1557 on server1 with the scaffold.
 
-Simulated tests (`sc-build scripts/test-hardware.sh`): 84 at 563ea8d, for
+Simulated tests (`sc-build scripts/test-hardware.sh`): 107 at 232790c, for
 bring-up and PHY (including a bit-level I2C slave for the SFP+ EEPROM, port
 expander and CS4227), rings, SNP and PCI decode.
 
@@ -395,7 +399,9 @@ Not verified on hardware:
   [bring-up notes](docs/bring-up.md#hardware-checks-spec-section-10).
 
 The console prints one line per NIC unless verbose (#22, verified on server1),
-and the image is byte-reproducible (#12). `ipxe-intelx.efi` is retired:
+and the image is byte-reproducible (#12). Jumbo frames (#33, MaxPacketSize
+9000) are done in code and simulation; the metal check (a blade on g16 logging
+`mtu 9000 (DHCP option 26)`) is waiting on a server1 boot. `ipxe-intelx.efi` is retired:
 stormbootx v0.17.0 ships no iPXE, and this driver is the X9 blades' Intel
 driver on the rustnic media (#5).
 
