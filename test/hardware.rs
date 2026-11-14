@@ -1507,3 +1507,112 @@ fn x553_sfp_sets_the_retimer_edc_over_mdio() {
     assert_eq!(setup, Err(Error::NoPhy));
     released_x553(&io);
 }
+
+// ---- The stormnic contract (#35): standard FEC, one line per port ---------
+
+use hardware::report::{self, Fec, Media, PortLine};
+
+const FECR: u32 = 1 << 17;
+const FECA: u32 = 1 << 18;
+const LC1_FEC: u32 = (1 << 14) | (1 << 15);
+
+#[test]
+fn x82599_kr_an_clears_fec_request_and_ability_and_reads_back_none() {
+    let mut io = Fake::ready(0);
+    let an = (4 << 13) | (1 << 16) | (1 << 30) | (1 << 31);
+    io.regs.insert(AUTOC, an | FECR | FECA);
+    let (_, s) = run(&mut io, Family::F82599, 0x10f8);
+    let Ok(Setup::F82599(f82599::Setup::Backplane { written, .. })) = s else { panic!("{s:?}") };
+    assert!(written, "the NVM's FEC bits make the AUTOC write happen");
+    assert_eq!(io.writes_to(AUTOC)[0], an, "FECR and FECA cleared, the rest kept");
+    let p = port(Family::F82599, 0x10f8, 0);
+    assert_eq!(report::fec(&mut io, p, s.as_ref().ok()), Ok(Fec::None));
+}
+#[test]
+fn x82599_kr_an_under_veto_reports_fec_not_set() {
+    let mut io = Fake::ready(0);
+    let an = (4 << 13) | (1 << 16) | (1 << 30) | (1 << 31) | FECR | FECA;
+    io.regs.insert(AUTOC, an);
+    io.regs.insert(0x42d0, 1);
+    let (_, s) = run(&mut io, Family::F82599, 0x10f8);
+    assert!(io.writes_to(AUTOC).is_empty());
+    let p = port(Family::F82599, 0x10f8, 0);
+    let fec = report::fec(&mut io, p, s.as_ref().ok()).unwrap();
+    assert_eq!(fec, Fec::Negotiable { register: "AUTOC", value: an });
+    assert!(!fec.standard());
+}
+#[test]
+fn x82599_sfi_fec_bits_are_left_alone_and_fec_is_none() {
+    // LMS 011 SFI has no clause-73 AN: no FEC can run, nothing to clear.
+    let mut io = x82599(0, sfp(&[(3, 0x10)]));
+    io.regs.insert(AUTOC, (3 << 30) | (3 << 13) | FECA);
+    let (_, s) = run(&mut io, Family::F82599, 0x1557);
+    assert!(io.writes_to(AUTOC).iter().all(|v| v & FECA != 0), "SFI AUTOC writes keep the NVM's bits");
+    let p = port(Family::F82599, 0x1557, 0);
+    assert_eq!(report::fec(&mut io, p, s.as_ref().ok()), Ok(Fec::None));
+    let autoc = report::autoc(&mut io, Family::F82599).unwrap();
+    assert_eq!(report::media(p, s.as_ref().ok(), autoc).to_string(), "SFP+ 10GBASE-SR/LR");
+}
+#[test]
+fn x552_and_x553_kr_an_clear_fec_and_read_back_none() {
+    for (family, device) in [(Family::X552, 0x15ab), (Family::X553, 0x15c2)] {
+        let mut io = if family == Family::X553 { x553_ready(0) } else { Fake::ready(0) };
+        io.kr.insert(0x420c, LC1_FEC);
+        let (_, s) = run(&mut io, family, device);
+        assert_eq!(io.kr[&0x420c] & LC1_FEC, 0, "{device:04x}: AN_FEC_REQ and AN_CAP_FEC cleared");
+        let p = port(family, device, 0);
+        assert_eq!(report::fec(&mut io, p, s.as_ref().ok()), Ok(Fec::None), "{device:04x}");
+    }
+    // The veto leaves LINK_CTRL_1 as the firmware set it: reported, not hidden.
+    let mut io = Fake::ready(0);
+    io.regs.insert(0x42d0, 1);
+    io.kr.insert(0x420c, LC1_AN_ENABLE | LC1_FEC);
+    let (_, s) = run(&mut io, Family::X552, 0x15ab);
+    let fec = report::fec(&mut io, port(Family::X552, 0x15ab, 0), s.as_ref().ok()).unwrap();
+    assert_eq!(fec, Fec::Negotiable { register: "LINK_CTRL_1", value: LC1_AN_ENABLE | LC1_FEC });
+}
+#[test]
+fn x552_ixfi_clears_fec_bits() {
+    let mut io = Fake::ready(1);
+    x557(&mut io, 3, true);
+    io.regs.insert(0x4240, (1 << 16) | 1);
+    io.kr.insert(0x820c, LC1_AN_ENABLE | (2 << 8) | LC1_FEC);
+    let (_, setup) = run(&mut io, Family::X552, 0x15ad);
+    assert!(setup.is_ok(), "{setup:?}");
+    assert_eq!(io.kr[&0x820c], (4 << 8) | LC1_AN_RESTART, "forced 10G, FEC bits cleared");
+    // 10GBASE-T: no KR AN on the line, so nothing read back and FEC none.
+    let p = port(Family::X552, 0x15ad, 1);
+    assert_eq!(report::fec(&mut io, p, setup.as_ref().ok()), Ok(Fec::None));
+}
+#[test]
+fn every_id_has_fec_none_without_kr_and_a_media_name() {
+    for nic in ids::SUPPORTED {
+        let p = port(nic.family, nic.device, 0);
+        let m = report::media(p, None, (3 << 13, 2 << 16));
+        assert!(!m.to_string().is_empty(), "{:04x}", nic.device);
+        if matches!(nic.family, Family::X540 | Family::X550) {
+            let mut io = Fake::ready(0);
+            assert_eq!(report::fec(&mut io, p, None), Ok(Fec::None));
+            assert!(io.ops.is_empty(), "no register read where no FEC can run");
+        }
+    }
+    let bp = report::media(port(Family::F82599, 0x10f8, 0), None, (4 << 13, 0));
+    assert_eq!(bp.to_string(), "backplane KX/KX4/KR AN");
+}
+#[test]
+fn port_line_says_media_speed_fec_and_link_and_errors_on_no_link() {
+    let line = PortLine {
+        version: "0.1.0", at: "0000:03:00.0", device: 0x1557, name: "82599EN SFP+",
+        mac: [0xac, 0x1f, 0x6b, 0x8a, 0xa7, 0x9c],
+        media: Media::Named("SFP+ passive DA"), link: Link::Up { megabits: Some(10_000) }, fec: Fec::None, down: "",
+    };
+    assert!(!line.error());
+    assert_eq!(line.to_string(), "stormnic-ixgbe 0.1.0: 0000:03:00.0 8086:1557 82599EN SFP+: MAC ac:1f:6b:8a:a7:9c, \
+        media SFP+ passive DA, speed 10000 Mb/s full duplex, FEC none, link UP");
+    let down = PortLine { link: Link::Down, down: "after 3000 ms (LINKS 00000000)", ..line };
+    assert!(down.error());
+    assert!(down.to_string().ends_with("speed none, FEC none, link DOWN: error: no link after 3000 ms (LINKS 00000000)"));
+    let fec = PortLine { fec: Fec::Negotiable { register: "AUTOC", value: 0x6000_8000 }, down: "", ..down };
+    assert!(fec.error());
+    assert!(fec.to_string().contains("FEC not set: error: KR AN still requests or offers clause-74 FEC (AUTOC 60008000"));
+}

@@ -47,6 +47,7 @@ use crate::snp;
 use crate::hardware::sfp::{Kind, Module};
 use crate::hardware::x552::{self, Copper};
 use crate::hardware::x553;
+use crate::hardware::report;
 use crate::hardware::{self, Error, Link, Port, Prepared, Registers, Setup};
 use crate::ids::{self, Nic};
 use crate::console;
@@ -291,7 +292,7 @@ impl IxgbeDriver {
                 return Err(Status::UNSUPPORTED.into());
             }
         };
-        let (mac, link, state) = match bring_up(&pci, nic, location) {
+        let (mac, link, media, fec, down) = match bring_up(&pci, nic, location) {
             Ok(r) => r,
             Err(e) => {
                 fail!(
@@ -332,16 +333,21 @@ impl IxgbeDriver {
             }
         };
         self.bound.push(Bound { controller, location, decode: attributes, dma, port, pci });
-        // The one default line per NIC (#22).
-        say!(
-            "stormnic-ixgbe {}: {} 8086:{:04x} {}: MAC {}, {}, SNP installed",
-            env!("CARGO_PKG_VERSION"),
-            at(location),
-            nic.device,
-            nic.name,
-            mac_str(mac),
-            state
-        );
+        // The one default line per port (#22), in the stormnic contract
+        // (#35): media, speed, the standard FEC and link; a port without
+        // link or its standard FEC is an error line.
+        let line = report::PortLine {
+            version: env!("CARGO_PKG_VERSION"),
+            at: at(location),
+            device: nic.device,
+            name: nic.name,
+            mac,
+            media,
+            link,
+            fec,
+            down,
+        };
+        say!("{line}");
         console::begin();
         Ok(())
     }
@@ -609,7 +615,9 @@ fn fatal(e: &Error<Status>) -> bool { matches!(e, Error::Io(_) | Error::Removed)
 
 /// Quiesce, PHY/module steps, MAC reset, NVM MAC, link setup and link wait,
 /// each step logged.
-fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result::Result<([u8; 6], Link, String), Error<Status>> {
+type BroughtUp = ([u8; 6], Link, report::Media, report::Fec, String);
+
+fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result::Result<BroughtUp, Error<Status>> {
     let mut io = Bar0(pci);
     let (at, dev) = (at(location), nic.device);
     // First, so it is on the console even if a later step hangs (#17).
@@ -664,17 +672,18 @@ fn bring_up(pci: &PciIo, nic: &Nic, location: Option<Location>) -> core::result:
         Some(Copper::Down) => trace!("stormnic-ixgbe: {at} 8086:{dev:04x}: copper link down"),
         None => {}
     }
-    // The summary line carries this (#22); verbose prints it here as well.
-    let state = match w.link {
-        Link::Up { megabits: Some(mb) } => format!("link up {mb} Mb/s"),
-        Link::Up { megabits: None } => String::from("link up, speed encoding reserved"),
+    // The port line carries these (#22, #35); verbose prints them here as well.
+    let down = match w.link {
+        Link::Up { .. } => String::new(),
         Link::Down => {
             let [links, autoc, autoc2, esdp] = hardware::link_registers(&mut io)?;
-            format!("link down after {budget} ms (LINKS {links:08x}, AUTOC {autoc:08x}, AUTOC2 {autoc2:08x}, ESDP {esdp:08x})")
+            format!("after {budget} ms (LINKS {links:08x}, AUTOC {autoc:08x}, AUTOC2 {autoc2:08x}, ESDP {esdp:08x})")
         }
     };
-    trace!("stormnic-ixgbe: {at} 8086:{dev:04x}: {state}");
-    Ok((id.mac, w.link, state))
+    let fec = report::fec(&mut io, port, setup.as_ref())?;
+    let media = report::media(port, setup.as_ref(), report::autoc(&mut io, port.family)?);
+    trace!("stormnic-ixgbe: {at} 8086:{dev:04x}: media {media}, {:?}, FEC {fec:?} {down}", w.link);
+    Ok((id.mac, w.link, media, fec, down))
 }
 
 fn speeds(s: Speeds) -> &'static str {

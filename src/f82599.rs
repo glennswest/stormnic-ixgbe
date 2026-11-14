@@ -27,6 +27,9 @@ const LMS: u32 = 7 << 13;
 const LMS_BIT2: u32 = 1 << 15;
 const LMS_10G_SERIAL: u32 = 3 << 13;
 const KR_SUPP: u32 = 1 << 16;
+/// FEC requested and FEC ability in the clause-73 base page (spec 5.1).
+pub(super) const FECR: u32 = 1 << 17;
+pub(super) const FECA: u32 = 1 << 18;
 const KX_SUPP: u32 = 1 << 30;
 const KX4_SUPP: u32 = 1 << 31;
 // AUTOC2 (spec 5.2).
@@ -265,6 +268,9 @@ fn setup_mac_link<Io: Registers>(io: &mut Io, ctx: &Ctx, s: Speeds, autoneg: boo
             if !kr_disabled { new |= ctx.orig & KR_SUPP; }
         }
         if s.g1 { new |= KX_SUPP; }
+        // The standard FEC for every speed this MAC runs is none (#35): no
+        // clause-74 FEC asked for or offered in KR AN.
+        new &= !(FECR | FECA);
     }
     let sfi = autoc2 & PMA_SERIAL == PMA_SFI;
     let only = |g10: bool| s.g10 == g10 && s.g1 == !g10 && !s.m100;

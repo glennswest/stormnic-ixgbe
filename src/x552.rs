@@ -55,6 +55,9 @@ pub(super) const LC1_FORCE_1G: u32 = 2 << 8;
 const LC1_FORCE_10G: u32 = 4 << 8;
 pub(super) const LC1_SGMII: u32 = 1 << 12;
 pub(super) const LC1_CLAUSE_37: u32 = 1 << 13;
+/// Clause-74 FEC requested and FEC ability in KR AN (spec 7.3).
+pub(super) const LC1_FEC_REQ: u32 = 1 << 14;
+pub(super) const LC1_CAP_FEC: u32 = 1 << 15;
 const LC1_CAP_KX: u32 = 1 << 16;
 pub(super) const LC1_CAP_KR: u32 = 1 << 18;
 pub(super) const LC1_AN_ENABLE: u32 = 1 << 29;
@@ -124,7 +127,7 @@ fn iosf_check<E>(address: u32, ctrl: u32) -> R<(), E> {
 }
 
 /// Read: the CTRL write starts it. PHY0 and PHY1 are taken whichever port.
-fn kr_read<Io: Registers>(io: &mut Io, port: Port, address: u32) -> R<u32, Io::Error> {
+pub(super) fn kr_read<Io: Registers>(io: &mut Io, port: Port, address: u32) -> R<u32, Io::Error> {
     sync::locked(io, port, KR_LOCK, |io| {
         iosf_idle(io)?;
         write(io, IOSF_CTRL, address | IOSF_TARGET_KR_PHY)?;
@@ -169,7 +172,8 @@ pub(super) fn restart_an<Io: Registers>(io: &mut Io, port: Port) -> R<u32, Io::E
 pub(super) fn kr_autoneg<Io: Registers>(io: &mut Io, port: Port, kr: bool, kx: bool) -> R<u32, Io::Error> {
     let lc1 = kr_modify(io, port, KRM_LINK_CTRL_1, |mut v| {
         v |= LC1_AN_ENABLE;
-        v &= !(LC1_CAP_KR | LC1_CAP_KX);
+        // The standard FEC for 10GBASE-KR and 1000BASE-KX is none (#35).
+        v &= !(LC1_CAP_KR | LC1_CAP_KX | LC1_FEC_REQ | LC1_CAP_FEC);
         if kr { v |= LC1_CAP_KR; }
         if kx { v |= LC1_CAP_KX; }
         v
@@ -186,7 +190,7 @@ pub(super) fn kr_autoneg<Io: Registers>(io: &mut Io, port: Port, kr: bool, kx: b
 /// AN restart.
 fn ixfi<Io: Registers>(io: &mut Io, port: Port, ten_gig: bool) -> R<u32, Io::Error> {
     let lc1 = kr_modify(io, port, KRM_LINK_CTRL_1, |mut v| {
-        v &= !(LC1_AN_ENABLE | LC1_FORCE_SPEED);
+        v &= !(LC1_AN_ENABLE | LC1_FORCE_SPEED | LC1_FEC_REQ | LC1_CAP_FEC);
         v | if ten_gig { LC1_FORCE_10G } else { LC1_FORCE_1G }
     })?;
     kr_modify(io, port, KRM_RX_TRN_LINKUP_CTRL, |v| v | TRN_CONV_WO_PROTOCOL)?;

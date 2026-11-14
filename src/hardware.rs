@@ -105,6 +105,8 @@ pub mod hostif;
 pub mod rings;
 #[path = "snp_core.rs"]
 pub mod snp;
+#[path = "report.rs"]
+pub mod report;
 
 type R<T, E> = Result<T, Error<E>>;
 
