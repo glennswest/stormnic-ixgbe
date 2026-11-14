@@ -347,7 +347,8 @@ impl IxgbeDriver {
             fec,
             down,
         };
-        say!("{line}");
+        // An error line comes after the steps that led to it (#22's ring).
+        if line.error() { fail!("{line}"); } else { say!("{line}"); }
         console::begin();
         Ok(())
     }
