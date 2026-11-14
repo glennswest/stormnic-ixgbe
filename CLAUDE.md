@@ -46,7 +46,7 @@ No configuration, ports or APIs; the console lines are listed in README.md.
 In stormbootx's `\stormboot\drivers`. Not a stormcentral component (no golden
 of its own). stormbootx builds it `--locked` from a pinned commit
 (`STORMNIC_IXGBE_REF` in its `scripts/build-nic-drivers.sh`, stormbootx#29,
-#43; 4b4813d at this writing (stormbootx v0.39.2), 232790c asked in stormbootx#194). Since
+#43; 4b4813d at this writing (stormbootx v0.39.2), 02fcc5d asked in stormbootx#211). Since
 stormbootx v0.17.0 there is no iPXE on any medium (#5, stormbootx#81, #91):
 the `nic-drivers` golden holds `stormnic-ixgbe.efi` and `stormnic-mlx4.efi`,
 the `stormbootx-rustnic` media loads both (the X9 blades' medium), and the
@@ -186,6 +186,7 @@ traffic). The first boot after the parts arrive is #26's cold-start check
     - Read it back: `hardware::report` (UEFI-independent, tested): `fec(io, port, setup)` reads AUTOC (82599 AN modes) or KRM LINK_CTRL_1 (X552 15ab/15ac, X553 15c2/15c3/15ce) and says `none`, or that FEC is still requested/advertised (a veto kept the write out); `media(port, setup)` names the media (SFP+ module type, backplane mode, 10GBASE-T, SGMII, ...).
     - One line per port in Start, as stormnic-igb#5: `stormnic-ixgbe 0.1.0: <pci> 8086:<id> <name>: MAC .., media .., speed N Mb/s, FEC none, link UP`; down: `speed none, FEC none, link DOWN: error: no link after N ms (LINKS ..)`; FEC not at its standard: `FEC ..: error: ..`.
     - Tests in `test/hardware.rs`; README console table, docs/bring-up.md, docs/spec/phy.md (5.1, 7 LINK_CTRL_1 rows). Then pin on the rustnic media (stormbootx issue); the master's blade boot shows the line.
+  - **Done in code, 2026-11-13, 4dbdf5b..2744a14 (docs 02fcc5d)** as planned (`src/report.rs`). sc-build at 2744a14 passed the full line: 114 tests (7 new), subsystem-11 check (133,120 bytes), check-reproducible, verbose build, and `cargo clippy --target x86_64-unknown-uefi -- -D warnings`, which is new. For clippy to run, `scripts/rustc-remap.sh` now keeps clippy-driver's rustc argument first, and the five older lints were fixed. Build-failure #36 (the shadowed `media` flag) was fixed and closed. Left: metal. Filed stormbootx#211 to pin 02fcc5d (it supersedes #194) and proposed #35 after it. Pass: a server1 boot logs `media SFP+ passive DA, speed 10000 Mb/s full duplex, FEC none, link UP`.
 - [ ] Jumbo frames (#33, P0; stormbootx#165: g16 is MTU 9000 end to end and stormbootx runs each NIC at min(DHCP option 26, SNP MaxPacketSize))
   - **In progress, 2026-11-07.** Plan, from the 82599/X540 datasheets (MAXFRS 0x4268 MFS bits 31:16 with CRC; HLREG0.JUMBOEN bit 2; SRRCTL.BSIZEPACKET in 1 KB units), same registers on X550/X552/X553 (BSD shared code `IXGBE_MAXFRS`, `IXGBE_HLREG0_JUMBOEN`):
     - `rings`: `BUF_SIZE` 9 KB (SRRCTL.BSIZEPACKET 9), so a frame never spans descriptors; `MAX_FRAME` 9018 without CRC (9000 + 14 header + a VLAN tag); `start` sets HLREG0.JUMBOEN and MAXFRS.MFS = 9022 (MAX_FRAME + CRC). Region 4096 + 64 x 9216 B = 145 pages.
