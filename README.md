@@ -129,8 +129,8 @@ builds it from a pinned commit (stormbootx#29, done 2026-09-28):
 x86_64-unknown-uefi` (stormbootx#43), checks subsystem 11, and records the
 commit and digest in `STORMNIC-SOURCE.txt`. At this writing the rustnic
 media pins 4b4813d (stormbootx v0.39.2, stormbootx#192: jumbo frames, #33);
-232790c (the one-line console, #22, and the reproducible image, #12) is asked
-in stormbootx#194. The pin moves with each stormbootx release; the media's
+02fcc5d (the per-port line and standard FEC, #35; includes the one-line console, #22, and the reproducible image, #12) is asked
+in stormbootx#211. The pin moves with each stormbootx release; the media's
 `media : rustnic ixgbe@<sha>` line shows the one in use.
 
 Since stormbootx v0.17.0 (stormbootx#52, #91; the owner's answer on
@@ -408,7 +408,7 @@ and claimed boothost/server3. The SOL log is quoted in
 [docs/snp.md](docs/snp.md#hardware-check-the-acceptance-for-4). The first
 boot (#7) bound 8086:1557 on server1 with the scaffold.
 
-Simulated tests (`sc-build scripts/test-hardware.sh`): 107 at 232790c, for
+Simulated tests (`sc-build scripts/test-hardware.sh`): 114 at 2744a14, for
 bring-up and PHY (including a bit-level I2C slave for the SFP+ EEPROM, port
 expander and CS4227), rings, SNP and PCI decode.
 
