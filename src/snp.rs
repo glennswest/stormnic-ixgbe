@@ -382,6 +382,7 @@ unsafe extern "efiapi" fn exit_notify(_event: Event, context: *mut c_void) {
 /// Make the Port and its child handle. The rings are stopped; `pci` is the
 /// controller's BY_DRIVER PciIo open, kept until `destroy`. Err: the status,
 /// and whether the Port (and so the DMA region) had to be left in place.
+#[allow(clippy::too_many_arguments)]
 pub fn create(agent: Handle, controller: Handle, pci: &PciIo, rings: Rings, family: Family,
     mac: [u8; 6], media: bool, location: Option<Location>) -> Result<*mut Port, (Status, bool)> {
     let bs = bs();

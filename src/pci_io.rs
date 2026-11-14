@@ -37,7 +37,8 @@ const ALLOCATE_ANY_PAGES: u32 = 0;
 const BOOT_SERVICES_DATA: u32 = 4;
 
 /// `EFI_PCI_IO_PROTOCOL_OPERATION` (for `Map`).
-#[allow(dead_code)]
+// The UEFI specification's names (EfiPciIoOperationBusMaster*).
+#[allow(dead_code, clippy::enum_variant_names)]
 #[repr(u32)]
 #[derive(Clone, Copy)]
 pub enum MapOp {

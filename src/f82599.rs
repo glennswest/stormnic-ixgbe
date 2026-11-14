@@ -273,7 +273,7 @@ fn setup_mac_link<Io: Registers>(io: &mut Io, ctx: &Ctx, s: Speeds, autoneg: boo
         new &= !(FECR | FECA);
     }
     let sfi = autoc2 & PMA_SERIAL == PMA_SFI;
-    let only = |g10: bool| s.g10 == g10 && s.g1 == !g10 && !s.m100;
+    let only = |g10: bool| s.g10 == g10 && s.g1 != g10 && !s.m100;
     if cur & PMA_1G_KX == 0 && (lms == 0 || lms == 2) && only(true) && sfi {
         new = new & !LMS | LMS_10G_SERIAL;
     } else if sfi && lms == 3 && only(false) && cur & PMA_1G_KX == 0 {

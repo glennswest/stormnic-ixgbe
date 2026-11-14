@@ -114,12 +114,11 @@ pub fn identify<Io: Registers>(io: &mut Io, port: Port) -> R<Module, Io::Error> 
     let (g1, g10, cable) = (m.comp_1g, m.comp_10g, m.cable);
     // Step 4: 10G-BX, by nominal rate and single-mode reach.
     let mut bx10g = false;
-    if g10 == 0 && g1 & (SX | LX | BASE_T) == 0 && cable & (PASSIVE_DA | ACTIVE_DA) == 0 {
-        if or_absent!(byte(io, port, EEPROM, 12, short)) == 0x67 {
-            let km = or_absent!(byte(io, port, EEPROM, 14, short));
-            let hm = or_absent!(byte(io, port, EEPROM, 15, short));
-            bx10g = km > 0 || hm >= 10;
-        }
+    if g10 == 0 && g1 & (SX | LX | BASE_T) == 0 && cable & (PASSIVE_DA | ACTIVE_DA) == 0
+        && or_absent!(byte(io, port, EEPROM, 12, short)) == 0x67 {
+        let km = or_absent!(byte(io, port, EEPROM, 14, short));
+        let hm = or_absent!(byte(io, port, EEPROM, 15, short));
+        bx10g = km > 0 || hm >= 10;
     }
     // Step 5: the first matching row wins.
     m.kind = if cable & PASSIVE_DA != 0 {
@@ -162,11 +161,10 @@ pub fn identify_qsfp<Io: Registers>(io: &mut Io, port: Port) -> R<Module, Io::Er
         Kind::DaCu
     } else if g10 & (SR | LR) != 0 {
         Kind::SrLr
-    } else if g10 & 0x01 != 0 {
-        Kind::DaActiveLimiting
-    } else if or_absent!(byte(io, port, EEPROM, 0x82, short)) == 0x23
-        && or_absent!(byte(io, port, EEPROM, 0x92, short)) > 0
-        && or_absent!(byte(io, port, EEPROM, 0x93, short)) >> 4 == 0 {
+    } else if g10 & 0x01 != 0
+        || (or_absent!(byte(io, port, EEPROM, 0x82, short)) == 0x23
+            && or_absent!(byte(io, port, EEPROM, 0x92, short)) > 0
+            && or_absent!(byte(io, port, EEPROM, 0x93, short)) >> 4 == 0) {
         Kind::DaActiveLimiting
     } else {
         Kind::Unknown
