@@ -139,6 +139,16 @@ recommendation).
 - **Intel-OUI module rule not applied** (spec 4.2 boot-driver note). Unknown
   modules are still refused, and so is 1000BASE-T on the X552.
 - **SmartSpeed not used** on 82599 backplanes (spec 9.2 allows it).
+- **FEC is the 802.3 standard, none, on every path** (#35, the stormnic
+  contract; owner 2026-11-14). The only FEC this family can run is
+  clause-74 BASE-R FEC, negotiated in clause-73 KR AN, and optional for
+  10GBASE-KR. KR AN setup clears the request and ability bits (82599 AUTOC
+  FECR/FECA in LMS 4/6/7, so an NVM that sets them now gets an AUTOC write;
+  X552/X553 LINK_CTRL_1 AN_FEC_REQ/AN_CAP_FEC, also in iXFI), and Start reads
+  them back for the port line. Under a manageability veto the bits stay as
+  the firmware set them and the line says `FEC not set: error: …`. SFI,
+  KX4/XFI, 10GBASE-T, SGMII and 1G paths have no FEC to set. Not verified on
+  hardware for KR: no lab machine has a backplane port.
 - **X552 LASI alarm enables** (spec 7.8.3, optional) are not set: the driver
   polls.
 - **#16 (2026-10-06): 154f, the X552 crosstalk fix and QSFP multispeed are
@@ -199,8 +209,8 @@ when one exists.
 `link setup: …`, `SFI firmware patch version`, `multispeed: …`) are trace
 lines, printed only with `StormnicVerbose` set before the driver loads, or a
 `--features verbose` build (README, "Console output"). The default console
-has the one summary line per NIC, which keeps the link state and, on a link
-down, the LINKS/AUTOC/AUTOC2/ESDP values.
+has the one line per port (media, speed, FEC, link; #35), which on a link
+down is an `error:` line keeping the LINKS/AUTOC/AUTOC2/ESDP values.
 
 The X9 blades' Intel ports are 8086:1557, an 82599 SFP+ (server1 at
 0000:03:00.0; server3, ac:1f:6b:8a:a4:5c, booted on the rustnic media,

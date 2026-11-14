@@ -35,6 +35,8 @@ scratch files go in `tmp/`.
 sc-build scripts/check-driver.sh   # build + check PE32+ subsystem 11
 sc-build scripts/check-reproducible.sh   # two builds in different dirs/CARGO_HOMEs are byte-identical (#12)
 sc-build 'cargo build --release --target x86_64-unknown-uefi'
+# the full line (#35): tests, PE check, reproducible, verbose, clippy -D warnings
+sc-build 'scripts/test-hardware.sh && scripts/check-driver.sh && scripts/check-reproducible.sh && cargo build --release --features verbose --locked --target x86_64-unknown-uefi && cargo clippy --release --target x86_64-unknown-uefi --locked -- -D warnings'
 ```
 
 No configuration, ports or APIs; the console lines are listed in README.md.
@@ -52,7 +54,7 @@ the `stormbootx-rustnic` media loads both (the X9 blades' medium), and the
 
 ## Test
 
-`sc-build scripts/test-hardware.sh` runs the simulated tests (107 at 232790c).
+`sc-build scripts/test-hardware.sh` runs the simulated tests (114 at 2744a14).
 On metal: file a stormbootx issue to pin the new commit and build the
 rustnic golden, propose this issue after it, and the master boots a blade
 from that golden (it holds the BMC and console access). The Intel test

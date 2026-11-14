@@ -78,7 +78,13 @@ firmware unloads an application as soon as its entry point returns.
 sc-build scripts/check-driver.sh
 # or just the build:
 sc-build 'cargo build --release --target x86_64-unknown-uefi'
+# the full line: simulated tests, image check, reproducibility, verbose build, clippy
+sc-build 'scripts/test-hardware.sh && scripts/check-driver.sh && scripts/check-reproducible.sh && cargo build --release --features verbose --locked --target x86_64-unknown-uefi && cargo clippy --release --target x86_64-unknown-uefi --locked -- -D warnings'
 ```
+
+`cargo clippy` runs through the same rustc wrapper as the build
+(`scripts/rustc-remap.sh` keeps clippy-driver's rustc argument first), and
+the full line has no warnings.
 
 `Cargo.lock` is committed (#11) and `scripts/check-driver.sh` builds with
 `--locked`, so a pinned commit always builds with the same dependency
@@ -260,9 +266,11 @@ driver already holds.
 ### Console output
 
 Everything goes to the console, which on the blades is the SOL capture on
-stormcentral. By default the driver prints **one line per NIC** it binds
-(PCI address, MAC, link, `SNP installed`), plus every warning and error
-(#22). The rest of the bring-up trace is printed only in verbose mode
+stormcentral. By default the driver prints **one line per port** it binds,
+in the stormnic contract (#35): PCI address, PCI ID and part, MAC, media,
+speed, FEC and link. A port without link, or not at its standard FEC, is an
+`error:` line, printed after the trace lines that led to it. Every warning
+and error is printed too (#22). The rest of the bring-up trace is printed only in verbose mode
 (below); otherwise the last 16 trace lines of the current Start are kept, and
 a failure prints them first, then the failure. The Default column says which
 lines are printed without verbose.
@@ -281,8 +289,25 @@ The `uefi` crate's own log messages (its logger, and a panic) are capped at
 WARN, or at INFO when verbose: its DEBUG and TRACE never reach the console,
 and its warnings, errors and panics always do (#8).
 
-A quiet boot on server3 prints, for the 82599, the one line
-`stormnic-ixgbe 0.1.0: 0000:03:00.0 8086:1557 82599EN SFP+: MAC ac:1f:6b:8a:a4:5c, link up 10000 Mb/s, SNP installed`.
+A quiet boot of server1 prints, for its 82599, the one line
+`stormnic-ixgbe 0.1.0: 0000:03:00.0 8086:1557 82599EN SFP+: MAC ac:1f:6b:8a:a7:9c, media SFP+ passive DA, speed 10000 Mb/s full duplex, FEC none, link UP`.
+
+### FEC (the stormnic contract, #35)
+
+The driver brings the port up itself: nothing (no FEC, speed or port
+setting) is handed down from stormbootx, which only picks the driver by PCI
+ID. The FEC is the IEEE 802.3 standard one for the media and speed, and for
+everything this family runs that is **none**: SFP+ SFI (10GBASE-SR/LR, direct
+attach), 10GBASE-KX4, XAUI, CX4, XFI, 1000BASE-X/KX, SGMII, 2.5G backplane and
+10M–1G copper have no FEC in 802.3; 10GBASE-T and 2.5G/5GBASE-T carry their
+LDPC inside the PMA (not a selectable FEC); and clause-74 BASE-R FEC is
+optional on 10GBASE-KR, where it can only be negotiated in clause-73 AN. So
+on KR AN the driver clears the FEC request and ability bits it advertises
+(82599 AUTOC FECR/FECA in LMS 4/6/7; X552/X553 KRM LINK_CTRL_1
+AN_FEC_REQ/AN_CAP_FEC), and reads them back after link setup for the line.
+If a manageability veto kept that write out and the bits are still set, the
+line says `FEC not set: error: …` with the register. The SFI path (the
+blades) has no AN and nothing to change.
 
 `LOC` is `seg:bus:dev.fn`, or `(location unknown)` if
 GetLocation fails. `PHY` is `X540`, `X550`, `X557`, `TN1010`, `88E1500`,
@@ -337,9 +362,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: link setup: firmware PHY left as it is (veto)` | Start, X553 15e4/15e5 under the veto | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: copper link down` | Start, X552 15ad, no copper link within the wait | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: copper link up at a speed the internal link cannot carry (AN vendor status X)` | Start, X552 15ad, copper at 10/100 Mb/s | always |
-| `stormnic-ixgbe: LOC 8086:DDDD: link up N Mb/s` | Start, link up (10 on X553 1G copper, 100, 1000, 2500 from the X550 on, 5000 on X550, or 10000) | verbose (the summary line has it) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link up, speed encoding reserved` | Start, link up with a reserved speed field | verbose (the summary line has it) |
-| `stormnic-ixgbe: LOC 8086:DDDD: link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)` | Start, no link (N is 9000 for 10GBASE-T, 3000 otherwise); the raw registers at the end of the wait, to tell a dead cable or partner (no signal detect, no PCS sync in LINKS) from a setup problem (#26) | verbose (the summary line has it) |
+| `stormnic-ixgbe: LOC 8086:DDDD: media MEDIA, Up { megabits: Some(N) }\|Down, FEC None\|Negotiable { .. }\|Unread [after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)]` | Start, after the link wait (N is 9000 ms for 10GBASE-T, 3000 otherwise); speeds 10 on X553 1G copper, 100, 1000, 2500 from the X550 on, 5000 on X550, or 10000 | verbose (the port line has it) |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA: 145 pages at device 0xX, RX 32 x 9216 B, TX 32 x 9216 B, legacy descriptors` | Start, DMA region mapped | verbose |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA region not mapped: STATUS; releasing` | Start, AllocateBuffer or Map failed (returns DEVICE_ERROR) | always, after the kept steps |
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA check: broadcast frame sent, 60 bytes\|not sent within 100 ms (GPTC N)` | Start, link up | always when not sent, else verbose |
@@ -352,7 +375,7 @@ e.g. `10G+1G+100M`.
 | `stormnic-ixgbe: LOC 8086:DDDD: DMA region released; releasing` | Start, after `rings failed` (returns DEVICE_ERROR) | always |
 | `stormnic-ixgbe: LOC: could not stop DMA: ERROR; bus mastering disabled\|could not be disabled, DMA region kept allocated` | Start or Stop, the queues would not stop | always, after the kept steps |
 | `stormnic-ixgbe: could not unmap\|free the DMA region: STATUS` | Stop or failed Start | always |
-| `stormnic-ixgbe 0.1.0: LOC 8086:DDDD NAME: MAC xx:xx:xx:xx:xx:xx, link up N Mb/s\|link up, speed encoding reserved\|link down after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X), SNP installed` | Start, success: **the one line per NIC** (#22). On a link down the raw registers tell a dead cable or partner (no signal detect or PCS sync) from a setup problem (#26) | always |
+| `stormnic-ixgbe 0.1.0: LOC 8086:DDDD NAME: MAC xx:xx:xx:xx:xx:xx, media MEDIA, speed N Mb/s full duplex\|speed unknown (reserved LINKS encoding)\|speed none, FEC none\|FEC not set: error: KR AN still requests or offers clause-74 FEC (AUTOC\|LINK_CTRL_1 X; manageability veto)\|FEC unread: error: …, link UP\|link DOWN: error: no link after N ms (LINKS X, AUTOC X, AUTOC2 X, ESDP X)` | Start, SNP installed: **the one line per port** (#22, #35). MEDIA is e.g. `SFP+ passive DA`, `SFP+ 10GBASE-SR/LR`, `QSFP+ …`, `SFP+ cage empty`, `backplane KX/KX4/KR AN`, `10GBASE-T`, `SGMII 1G`. On a link down the raw registers tell a dead cable or partner (no signal detect or PCS sync) from a setup problem (#26) | always; an error line after the kept steps |
 | `stormnic-ixgbe: the N step(s) before the failure below[ (M earlier not kept)]:`, then those lines | before each "after the kept steps" failure when not verbose: the last 16 trace lines since this Start began | always |
 | `stormnic-ixgbe: LOC 8086:DDDD: SNP not installed: STATUS; releasing` | Start, the child handle could not be made (returns DEVICE_ERROR) | always, after the kept steps |
 | `stormnic-ixgbe: LOC: SNP initialized, MAC xx:xx:xx:xx:xx:xx, media present\|absent` | SNP Initialize (the first use: stormbootx's smoltcp) | verbose |

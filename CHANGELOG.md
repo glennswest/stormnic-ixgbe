@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-11-13
+- **feat:** #35, the stormnic contract: the driver brings the port up with the IEEE 802.3 standard FEC for its media and speed, which for every path of this family is none, and prints one line per port: `stormnic-ixgbe 0.1.0: LOC 8086:DDDD NAME: MAC …, media MEDIA, speed N Mb/s full duplex, FEC none, link UP`. A port with no link (`link DOWN: error: no link after N ms (LINKS …)`) or not at its standard FEC (`FEC not set: error: …`) is an error line, printed after the kept trace lines. It replaces the `…, link up N Mb/s, SNP installed` summary line. KR AN no longer requests or offers clause-74 FEC: 82599 AUTOC FECR/FECA are cleared in LMS 4/6/7, X552/X553 KRM LINK_CTRL_1 AN_FEC_REQ/AN_CAP_FEC in KR AN and iXFI; Start reads them back (`hardware::report`). The SFI path the blades run is unchanged. 7 new simulated tests (114). README (console, FEC section, build line), docs/bring-up.md, docs/spec/phy.md 5.1 and 7.3.
+- **fix:** `scripts/rustc-remap.sh` handles `cargo clippy` (clippy-driver gets its rustc argument first); `cargo clippy --target x86_64-unknown-uefi -- -D warnings` is in the full sc-build line and passes. The five lints it found are fixed (two collapsible/same-block `if`s in sfp.rs, a bool expression in f82599.rs; `MapOp`'s UEFI names and `snp::create`'s arguments allowed).
+
 ### 2026-11-07
 - **docs:** refreshed from the code since 2026-10-12: README (NOTICE is an acknowledgement, not Intel's notice, #30; the rustnic pin is 4b4813d with 232790c asked in stormbootx#194, #32; 107 simulated tests; jumbo status) and CLAUDE.md (pin, test count). Jumbo, one-line console and reproducible-image text already matched the code.
 - **docs:** #33: stormbootx v0.39.2 pins 4b4813d on the rustnic media (stormbootx#192); the metal check (server1 at MTU 9000) is handed to the master with `wait-hardware`. 232790c (#8, #12, #22) asked separately in stormbootx#194.

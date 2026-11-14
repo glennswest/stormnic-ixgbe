@@ -754,8 +754,8 @@ and AUTOC2. Only the T3 LOM has an external MDIO PHY.
 | 12 | `0x0000_1000` | Restart_AN | set to restart auto-negotiation / apply LMS |
 | 15:13 | `0x0000_E000` | LMS (link mode select) | see below |
 | 16 | `0x0001_0000` | KR_SUPP | advertise / allow 10GBASE-KR |
-| 17 | `0x0002_0000` | FECR | FEC requested |
-| 18 | `0x0004_0000` | FECA | FEC ability (the header's AN_RX_ALIGN mask `0x007C_0000` overlaps this bit) |
+| 17 | `0x0002_0000` | FECR | FEC requested; cleared in KR AN modes (LMS 4/6/7), the standard FEC being none (#35) |
+| 18 | `0x0004_0000` | FECA | FEC ability (the header's AN_RX_ALIGN mask `0x007C_0000` overlaps this bit); cleared with FECR (#35) |
 | 22:18 | `0x007C_0000` | AN_RX_ALIGN | not touched |
 | 23 | `0x0080_0000` | AN_RX_DRIFT | not touched |
 | 24 | `0x0100_0000` | AN_RX_LOOSE | not touched |
@@ -1240,8 +1240,8 @@ are listed for completeness.
 | 10:8 | `0x0000_0700` | FORCE_SPEED | `010` (`0x200`) = 1G, `100` (`0x400`) = 10G; used when AN is disabled |
 | 12 | `0x0000_1000` | AN_SGMII_EN | X553 SGMII only |
 | 13 | `0x0000_2000` | AN_CLAUSE_37_EN | X553 SGMII only |
-| 14 | `0x0000_4000` | AN_FEC_REQ | not touched |
-| 15 | `0x0000_8000` | AN_CAP_FEC | not touched |
+| 14 | `0x0000_4000` | AN_FEC_REQ | cleared by KR AN setup and iXFI (#35: the standard FEC is none) |
+| 15 | `0x0000_8000` | AN_CAP_FEC | cleared with AN_FEC_REQ (#35) |
 | 16 | `0x0001_0000` | AN_CAP_KX | advertise 1000BASE-KX |
 | 18 | `0x0004_0000` | AN_CAP_KR | advertise 10GBASE-KR |
 | 24 | `0x0100_0000` | EEE_CAP_KX | not touched on the X552 |
