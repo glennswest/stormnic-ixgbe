@@ -313,8 +313,8 @@ impl IxgbeDriver {
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
-        let media = link != Link::Down;
-        let port = match snp::create(agent.as_ptr(), controller.as_ptr(), &pci, rings, nic.family, mac, media, location) {
+        let present = link != Link::Down;
+        let port = match snp::create(agent.as_ptr(), controller.as_ptr(), &pci, rings, nic.family, mac, present, location) {
             Ok(p) => p,
             Err((status, in_use)) => {
                 fail!(
