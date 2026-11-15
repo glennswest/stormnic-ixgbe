@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-11-14
+- **docs:** #35 work plan: stormbootx#211 pinned 02fcc5d (golden-stormbootx-rustnic-3a9c7bf19e9aba2d); the server1 metal boot is handed to the master.
+
+### 2026-11-14
 - **docs:** refreshed from the code since 2026-11-07 (all of it is #35): docs/snp.md console table has the per-port line (media, speed, FEC, link) instead of the old `link up N Mb/s, SNP installed` summary; README test count 114 and the pin ask (02fcc5d in stormbootx#211, superseding 232790c in #194). README, bring-up.md and spec already described #35, `report.rs` and the clippy line. No doc promises anything the code does not do.
 
 ### 2026-11-13
