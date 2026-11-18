@@ -330,7 +330,9 @@ The caller must own the PCI function and provide BAR0 register access and a
 microsecond delay. Reset first rejects active virtualization, masks interrupts,
 disables reception and all 128 RX queues, and drains PCIe master requests.
 It reads CTRL back before polling STATUS. A drain failure returns without
-issuing reset; recovery by forced reset is deliberately not implemented.
+issuing reset: Start fails and releases the NIC. The driver never forces a
+reset on a function that has not drained (policy: hands off a port it cannot
+quiesce).
 
 Global reset (superseded by #13: now one reset type chosen by the spec,
 see above) set software and link reset together. No register access occurs
@@ -492,9 +494,10 @@ After `reset` (above), `setup_link` differs per family:
 `wait_link` then polls current LINKS.LINK_UP every 10 ms for up to 3 s.
 Link down at the deadline is reported, not an error.
 
-Known limits, not claimed as done: an SFP+ module whose speed differs from
-the NVM link mode (a 1G module on a 10G SFI port) is not detected or
-adapted — that needs the SFP I²C module ID, not implemented; link flow
+Known limits at 025a137: an SFP+ module whose speed differs from the NVM
+link mode (a 1G module on a 10G SFI port) was not detected or adapted
+(since #13 the SFP I²C module ID and multispeed are read and applied; see
+`src/sfp.rs` and `src/f82599.rs` above); link flow
 control is not configured (X540 3.6.3.2.2.2, 82599 4.6.3.2 — left zero
 until the SNP needs it); link is only sampled in Start, the SNP (#4) now
 reports it live (MediaPresent from LINKS in GetStatus). The simulated-register tests check register order and

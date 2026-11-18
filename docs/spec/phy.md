@@ -1591,8 +1591,8 @@ sources allowed here (section 10).
 
 ### 7.10 X552 KX4 (0x15AA) and XFI (0x15B0)
 
-The PHY setup routine is absent and the raw PHY register operations return
-"not implemented". The link is run by hardware from the NVM configuration.
+The shared code has no PHY setup routine and no raw PHY register access for
+these two devices, so a driver makes no PHY access at all. The link is run by hardware from the NVM configuration.
 Capabilities: KX4 is 10G + 1G with AN; XFI is 10G + 1G with no AN. Link comes
 from LINKS. A boot driver only polls.
 
