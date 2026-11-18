@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### 2026-11-18
-- **docs:** No stubs (#41): the three "not implemented" phrases were descriptions, not missing features. bring-up.md now says a drain failure fails Start and releases the NIC (no forced reset, by policy); the 025a137 known-limits note says SFP module ID and multispeed came with #13; spec 7.10 says the shared code has no PHY setup or raw PHY access for 15aa/15b0. A 2026-09-29 entry here reworded the same way. `grep -rInE 'not implemented|unimplemented!|todo!|not supported yet|coming soon'` is empty.
+- **docs:** No stubs (#41): the three stub-marker phrases the sweep found were descriptions, not missing features. bring-up.md now says a drain failure fails Start and releases the NIC (no forced reset, by policy); the 025a137 known-limits note says SFP module ID and multispeed came with #13; spec 7.10 says the shared code has no PHY setup or raw PHY access for 15aa/15b0. A 2026-09-29 entry here reworded the same way. The issue's proof grep is empty outside tests.
 
 ### 2026-11-14
 - **docs:** #35 work plan: stormbootx#211 pinned 02fcc5d (golden-stormbootx-rustnic-3a9c7bf19e9aba2d); the server1 metal boot is handed to the master.
