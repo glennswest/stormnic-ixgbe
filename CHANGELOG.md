@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-11-20
+- **fix:** #44 (review finding 3154b4d007cd): on X552 port 1, an I2C-mux (ESDP) access that failed after SW_FW_SYNC was taken returned with the shared PHY/I2C bits still held, so every later access on either port timed out until reset. A failed mux set-up now gives the bits back (and tries the mux off); release clears the bits even when the mux cannot be switched back, then returns the first error. New test `x552_port1_mux_failure_never_strands_the_shared_i2c_bits`.
+
 ### 2026-11-18
 - **docs:** No stubs (#41): the three stub-marker phrases the sweep found were descriptions, not missing features. bring-up.md now says a drain failure fails Start and releases the NIC (no forced reset, by policy); the 025a137 known-limits note says SFP module ID and multispeed came with #13; spec 7.10 says the shared code has no PHY setup or raw PHY access for 15aa/15b0. A 2026-09-29 entry here reworded the same way. The issue's proof grep is empty outside tests.
 

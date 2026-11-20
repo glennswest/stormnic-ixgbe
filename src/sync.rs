@@ -157,7 +157,14 @@ fn acquire_bits<Io: Registers>(io: &mut Io, port: Port, mask: u32) -> R<(), Io::
             let taken = write(io, sw_fw_sync, sync | sw);
             unlock(io, port.family)?;
             taken?;
-            if mux(port, mask) { set_mux(io, true)?; }
+            if mux(port, mask) {
+                if let Err(e) = set_mux(io, true) {
+                    // Finding 3154b4d007cd: give the bits back (and try the
+                    // mux off) so a failed ESDP access does not strand them.
+                    let _ = release_bits(io, port, mask);
+                    return Err(e);
+                }
+            }
             return Ok(());
         }
         unlock(io, port.family)?;
@@ -167,14 +174,17 @@ fn acquire_bits<Io: Registers>(io: &mut Io, port: Port, mask: u32) -> R<(), Io::
 }
 
 /// Release `mask`: the mux first, then the software bits; then 10 µs for
-/// PHY/MNG masks and 2 ms for others from the X540 on (spec 1.4.3).
+/// PHY/MNG masks and 2 ms for others from the X540 on (spec 1.4.3). The bits
+/// are cleared even if the mux could not be switched back; the first error
+/// is returned after both steps (finding 3154b4d007cd).
 fn release_bits<Io: Registers>(io: &mut Io, port: Port, mask: u32) -> R<(), Io::Error> {
-    if mux(port, mask) { set_mux(io, false)?; }
+    let muxed = if mux(port, mask) { set_mux(io, false) } else { Ok(()) };
     let (sw, _, _) = bits(port.family, mask);
     let (_, sw_fw_sync) = regs(port.family);
     lock(io, port.family)?;
     let cleared = clear(io, sw_fw_sync, sw);
     unlock(io, port.family)?;
+    muxed?;
     cleared?;
     if port.family != Family::F82599 {
         io.delay_us(if mask & (PHY0 | PHY1 | SW_MNG) != 0 { 10 } else { 2000 });

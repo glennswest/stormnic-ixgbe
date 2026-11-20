@@ -589,6 +589,23 @@ fn x540_semaphore_gives_up_after_200_tries_and_x552_after_1000() {
         assert_eq!(io.delays(5000), tries);
     }
 }
+/// Finding 3154b4d007cd: an ESDP (I2C mux) access that fails on X552 port 1
+/// must not leave the shared PHY/I2C bits held, on acquire or on release.
+#[test]
+fn x552_port1_mux_failure_never_strands_the_shared_i2c_bits() {
+    let p = port(Family::X552, 0x15ac, 1);
+    let mut io = Fake::ready(1);
+    io.fail = Some(ESDP);
+    assert!(hardware::sync::acquire(&mut io, p, hardware::sync::SHARED_I2C).is_err());
+    assert!(io.writes_to(SWFW_SYNC).iter().any(|v| v & 0x1806 == 0x1806), "bits were taken");
+    released(&io);
+    let mut io = Fake::ready(1);
+    hardware::sync::acquire(&mut io, p, hardware::sync::SHARED_I2C).unwrap();
+    assert_eq!(io.reg(ESDP) & 2, 2, "mux on while held");
+    io.fail = Some(ESDP);
+    assert_eq!(hardware::sync::release(&mut io, p, hardware::sync::SHARED_I2C), Err(Error::Io("PCI read failed")));
+    released(&io);
+}
 #[test]
 fn swsm_never_granted_fails_closed() {
     let mut io = Fake::ready(0);
