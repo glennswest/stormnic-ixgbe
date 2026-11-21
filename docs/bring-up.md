@@ -100,7 +100,8 @@ recommendation).
 - **82599 backplane and CX4 (10f7, 10f8, 10f9, 10fc, 1514, 1517, 152a)**:
   `setup_mac_link` with the NVM capabilities and the KX_AN_COMP wait. With the
   NVM's own advertisement this writes nothing. SmartSpeed is not used, which
-  spec 9.2 allows.
+  spec 9.2 allows. The port line names 10f9 as `10GBASE-CX4` and 10fc as
+  `XAUI`; the others say `backplane` and AUTOC's link mode (#47).
 - **82599 T3 (151c)**:
   1. TN1010 advertisement: 7.0x0020 bit 12, 7.0x0017 bit 14, 7.0x0010 bit 8.
   2. AN restart and a pipeline reset, unless vetoed.
