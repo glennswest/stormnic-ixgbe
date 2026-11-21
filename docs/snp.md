@@ -89,7 +89,7 @@ but uninitialized interface return DEVICE_ERROR.
 | Statistics | UNSUPPORTED |
 | MCastIpToMac | IPv4 224.0.0.0/4 to 01:00:5e + the low 23 bits; IPv6 ff00::/8 to 33:33 + the low 32 bits; anything else INVALID_PARAMETER |
 | NvData | UNSUPPORTED |
-| GetStatus | Reclaims sent descriptors and reads LINKS into MediaPresent. InterruptStatus: RECEIVE if a frame is waiting, TRANSMIT if one went out since the last call. TxBuf: the oldest transmitted buffer not yet handed back, or NULL. Either pointer may be NULL |
+| GetStatus | Reclaims sent descriptors and reads LINKS into MediaPresent. InterruptStatus: RECEIVE if a frame is waiting, TRANSMIT if the NIC completed one (DD written back) since the last call. TxBuf: the oldest buffer whose descriptor has DD and that was not yet handed back, or NULL; a frame still on the ring is never returned (#46). Either pointer may be NULL |
 | Transmit | Frames up to 9018 bytes (MaxPacketSize + MediaHeaderSize, plus a VLAN tag); a longer one is INVALID_PARAMETER. With HeaderSize 14 the header is filled in the caller's buffer: destination and protocol required, source defaulting to the station address. The frame is copied into a ring buffer, and the caller's buffer is queued for GetStatus. NOT_READY when the ring (31 frames) or the recycle queue (64 buffers) is full |
 | Receive | The next frame the filters pass: its length, header size 14, source, destination and protocol. BUFFER_TOO_SMALL sets `*BufferSize` to the frame's length (up to 9018) and leaves the frame queued. NOT_READY when nothing is waiting |
 
@@ -115,6 +115,17 @@ This driver copies the frame, so the buffer is free at once, but it is
 still handed back through GetStatus in order: callers such as MNP wait for
 that before they reuse a buffer. A caller that never calls GetStatus gets NOT_READY after
 64 frames.
+
+A buffer comes back only once the NIC has written back DD on its descriptor
+(#46): with no link, or DMA stalled, GetStatus returns no buffer and no
+TRANSMIT bit however often it is polled, so a stack never counts a frame as
+sent that is still on the ring. Each Transmit takes one descriptor and one
+recycle slot, both in order, so the oldest buffers are the completed ones,
+across the ring's wraparound. Reset, Shutdown, Stop and the ExitBootServices
+halt drain the ring for up to 100 ms; a frame still there after that is never
+sent, and its buffer is dropped from the recycle queue rather than reported
+as transmitted. The caller's memory was free from Transmit on (the frame was
+copied).
 
 ## ExitBootServices
 
@@ -196,6 +207,9 @@ built an x86_64 PE32+, subsystem 11, 97,792-byte image with no warnings.
   TRANSMIT bit, the buffer handed back once;
 - Transmit's parameter checks;
 - NOT_READY from a full ring and from a full recycle queue, and recovery;
+- GetStatus polled while TX is held pending: no buffer and no TRANSMIT bit
+  until DD, then each buffer once, oldest first, across ring wraparound;
+  frames a Reset abandons on the ring never reported sent (#46);
 - Receive's header fields, and BUFFER_TOO_SMALL keeping the frame;
 - a loopback round trip;
 - exact filtering where the hardware passes more (an MTA hash alias,

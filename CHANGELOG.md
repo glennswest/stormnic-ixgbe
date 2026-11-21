@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-11-21
+- **fix:** #46 (review finding b92772b25112): GetStatus handed back the oldest transmitted buffer whenever one was queued, and set TRANSMIT_INTERRUPT at Transmit, even with the descriptor still pending (no link, DMA stalled), so a stack could count a frame as sent that never went out. `Snp` now counts the descriptors still on the ring against `rings.tx_pending()`: a buffer comes back, oldest first, only after its descriptor has DD, and TRANSMIT is set only when the NIC completed one. Frames a Reset, Shutdown, Stop or the ExitBootServices halt leave on the ring after the drain are dropped from the recycle queue, not reported sent. Three new tests in `test/snp.rs` (GetStatus polled with TX held, wraparound over 100 frames, a reset abandoning frames). docs/snp.md GetStatus row and recycling section.
+
+### 2026-11-21
 - **docs:** #45 verified by sc-build at 7cf5065 (116 tests, reproducible, clippy, 0 warnings); README and CLAUDE.md test counts updated.
 
 ### 2026-11-20
