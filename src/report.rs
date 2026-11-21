@@ -92,7 +92,7 @@ pub fn fec<Io: Registers>(io: &mut Io, port: Port, setup: Option<&Setup>) -> R<F
 pub enum Media {
     /// An SFP+ (or QSFP+ when `qsfp`) cage and the module found in it.
     Cage { qsfp: bool, module: Option<Module> },
-    /// 82599 backplane / CX4 / LCO: AUTOC's link mode.
+    /// 82599 backplane (KX/KX4/KR): AUTOC's link mode.
     Backplane { autoc: u32, autoc2: u32 },
     Named(&'static str),
 }
@@ -102,6 +102,10 @@ pub enum Media {
 pub fn media(port: Port, setup: Option<&Setup>, autoc: (u32, u32)) -> Media {
     let module = |m: &Module| Some(*m);
     match port.family {
+        // 10f9 and 10fc take the backplane link setup (f82599::media), but
+        // their media is CX4 or XAUI, not a backplane (#47).
+        Family::F82599 if port.device == 0x10f9 => Media::Named("10GBASE-CX4"),
+        Family::F82599 if port.device == 0x10fc => Media::Named("XAUI"),
         Family::F82599 => match (f82599::media(port.device), setup) {
             (f82599::Media::Copper, _) => Media::Named("10GBASE-T (TN1010 PHY)"),
             (f82599::Media::Lco, _) => Media::Named("fiber LCO"),

@@ -1620,6 +1620,27 @@ fn every_id_has_fec_none_without_kr_and_a_media_name() {
     assert_eq!(bp.to_string(), "backplane KX/KX4/KR AN");
 }
 #[test]
+fn x82599_cx4_and_xaui_ports_report_their_media_not_backplane() {
+    // #47 (finding 8e84eb358158): 10f9/10fc share the backplane link setup
+    // but are CX4 and XAUI ports; whatever AUTOC's mode, the line names them.
+    for autoc in [((1 << 13) | (2 << 7), 0), (1 << 13, 0), (4 << 13, 0)] {
+        let cx4 = report::media(port(Family::F82599, 0x10f9, 0), None, autoc);
+        assert_eq!(cx4, Media::Named("10GBASE-CX4"));
+        assert_eq!(cx4.to_string(), "10GBASE-CX4");
+        let xaui = report::media(port(Family::F82599, 0x10fc, 1), None, autoc);
+        assert_eq!(xaui, Media::Named("XAUI"));
+        assert_eq!(xaui.to_string(), "XAUI");
+    }
+    assert_eq!(f82599::media(0x10f9), f82599::Media::Backplane, "link setup unchanged");
+    assert_eq!(f82599::media(0x10fc), f82599::Media::Backplane, "link setup unchanged");
+    let line = PortLine {
+        version: "0.1.0", at: "0000:01:00.0", device: 0x10f9, name: "82599 CX4",
+        mac: [0; 6], media: report::media(port(Family::F82599, 0x10f9, 0), None, ((1 << 13) | (2 << 7), 0)),
+        link: Link::Up { megabits: Some(10_000) }, fec: Fec::None, down: "",
+    };
+    assert!(line.to_string().contains("media 10GBASE-CX4, speed 10000 Mb/s"));
+}
+#[test]
 fn port_line_says_media_speed_fec_and_link_and_errors_on_no_link() {
     let line = PortLine {
         version: "0.1.0", at: "0000:03:00.0", device: 0x1557, name: "82599EN SFP+",
