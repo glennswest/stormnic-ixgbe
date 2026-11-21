@@ -9,7 +9,8 @@
 //! Filtering is exact: the hardware passes a superset (the MTA is a 12-bit
 //! hash) and `accepts` drops on receive what the SNP setting does not allow.
 //! Transmit copies the frame into a ring buffer, so the caller's buffer is
-//! free at once; it is queued for GetStatus to hand back, as the spec asks.
+//! free at once; it is queued for GetStatus to hand back, as the spec asks,
+//! but only once the NIC has written back DD on its descriptor (#46).
 
 use super::rings::{Filter, Rings, MAX_FRAME, MIN_FRAME};
 use super::{link, read, write, Error, Family, Link, Registers};
@@ -94,12 +95,16 @@ pub struct Snp {
     pub mcast: [[u8; 6]; MAX_MCAST],
     pub mcast_count: usize,
     pub media: bool,
-    /// A frame went out since the last GetStatus.
+    /// A frame went out (DD written back) since the last GetStatus.
     transmitted: bool,
-    /// Caller buffers (as addresses) for GetStatus, oldest at `head`.
+    /// Caller buffers (as addresses) for GetStatus, oldest at `head`: the
+    /// first `queued - in_flight` are sent, the newest `in_flight` are still
+    /// on the ring. One descriptor per token, both in order, so the oldest
+    /// tokens are the ones whose descriptors completed (#46).
     recycle: [usize; RECYCLE],
     head: usize,
     queued: usize,
+    in_flight: usize,
 }
 
 /// `EFI_SIMPLE_NETWORK_PROTOCOL.MCastIpToMac`: IPv4 224.0.0.0/4 maps to
@@ -128,7 +133,7 @@ impl Snp {
         Snp {
             rings, family, state: State::Stopped, permanent: mac, current: mac,
             setting: 0, mcast: [[0; 6]; MAX_MCAST], mcast_count: 0, media,
-            transmitted: false, recycle: [0; RECYCLE], head: 0, queued: 0,
+            transmitted: false, recycle: [0; RECYCLE], head: 0, queued: 0, in_flight: 0,
         }
     }
 
@@ -166,7 +171,7 @@ impl Snp {
     pub fn initialize<Io: Registers>(&mut self, io: &mut Io) -> F<(), Io::Error> {
         match self.state {
             State::Stopped => return Err(Fail::NotStarted),
-            State::Initialized => { self.rings.stop(io)?; }
+            State::Initialized => self.stop_queues(io)?,
             State::Started => {}
         }
         self.setting = 0;
@@ -179,7 +184,7 @@ impl Snp {
     /// Reset: restart the queues, keeping the filters and station address.
     pub fn reset<Io: Registers>(&mut self, io: &mut Io) -> F<(), Io::Error> {
         self.initialized()?;
-        self.rings.stop(io)?;
+        self.stop_queues(io)?;
         self.run(io)
     }
 
@@ -187,16 +192,35 @@ impl Snp {
     /// off, GIO master disable); initialized to started.
     pub fn shutdown<Io: Registers>(&mut self, io: &mut Io) -> F<(), Io::Error> {
         self.initialized()?;
-        self.rings.stop(io)?;
+        self.stop_queues(io)?;
         self.state = State::Started;
         Ok(())
+    }
+
+    /// Stop the queues. Frames still on the ring after the drain are never
+    /// sent: their buffers are dropped from the recycle queue, so GetStatus
+    /// never reports a frame as transmitted that did not go out (#46).
+    fn stop_queues<Io: Registers>(&mut self, io: &mut Io) -> Result<(), Error<Io::Error>> {
+        let r = self.rings.stop(io);
+        self.settle();
+        self.queued -= self.in_flight;
+        self.in_flight = 0;
+        r.map(|_| ())
+    }
+
+    /// Count the descriptors the NIC completed since the last look: they
+    /// leave `in_flight`, and TRANSMIT_INTERRUPT is due.
+    fn settle(&mut self) {
+        let pending = self.in_flight.min(self.rings.tx_pending());
+        if pending < self.in_flight { self.transmitted = true; }
+        self.in_flight = pending;
     }
 
     /// Start the queues and program the station address and filters.
     fn run<Io: Registers>(&mut self, io: &mut Io) -> F<(), Io::Error> {
         if let Err(e) = self.rings.start(io, self.hardware_filter()) {
             // A queue that did not enable: leave the NIC not mastering.
-            let _ = self.rings.stop(io);
+            let _ = self.stop_queues(io);
             self.state = State::Started;
             return Err(e.into());
         }
@@ -322,10 +346,12 @@ impl Snp {
         }
         if buf.len() < MIN_FRAME { return Err(Fail::BufferTooSmall(MIN_FRAME)); }
         if self.queued == RECYCLE { return Err(Fail::NotReady); }
+        // Completions first: `rings.transmit` reclaims too.
+        self.settle();
         if !self.rings.transmit(io, buf)? { return Err(Fail::NotReady); }
         self.recycle[(self.head + self.queued) % RECYCLE] = token;
         self.queued += 1;
-        self.transmitted = true;
+        self.in_flight += 1;
         Ok(())
     }
 
@@ -344,17 +370,18 @@ impl Snp {
     }
 
     /// GetStatus: interrupt bits (RECEIVE when a frame is waiting, TRANSMIT
-    /// when one went out since the last call), the link into `media`, and
-    /// with `recycle` the oldest transmitted buffer not yet handed back.
+    /// when the NIC completed one since the last call), the link into
+    /// `media`, and with `recycle` the oldest transmitted buffer not yet
+    /// handed back. A buffer whose descriptor has no DD yet is not returned.
     pub fn get_status<Io: Registers>(&mut self, io: &mut Io, recycle: bool)
         -> F<(u32, Option<usize>), Io::Error> {
         self.initialized()?;
-        self.rings.reclaim();
+        self.settle();
         self.media = link(io, self.family)? != Link::Down;
         let mut bits = 0;
         if self.next_accepted(io)?.is_some() { bits |= RECEIVE_INTERRUPT; }
         if core::mem::take(&mut self.transmitted) { bits |= TRANSMIT_INTERRUPT; }
-        let token = (recycle && self.queued > 0).then(|| {
+        let token = (recycle && self.queued > self.in_flight).then(|| {
             let t = self.recycle[self.head];
             self.head = (self.head + 1) % RECYCLE;
             self.queued -= 1;
@@ -365,7 +392,7 @@ impl Snp {
 
     /// ExitBootServices: stop DMA whatever the state; the OS owns memory next.
     pub fn halt<Io: Registers>(&mut self, io: &mut Io) -> Result<(), Error<Io::Error>> {
-        let r = if self.state == State::Initialized { self.rings.stop(io).map(|_| ()) } else { Ok(()) };
+        let r = if self.state == State::Initialized { self.stop_queues(io) } else { Ok(()) };
         self.state = State::Stopped;
         r
     }

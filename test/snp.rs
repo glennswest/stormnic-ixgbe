@@ -136,6 +136,66 @@ fn full_ring_or_recycle_queue_is_not_ready() {
 }
 
 #[test]
+fn get_status_holds_a_buffer_until_its_descriptor_has_dd() {
+    // Review finding b92772b25112 (#46): no link, so the NIC fetches nothing.
+    let (_mem, mut nic, mut s) = up();
+    nic.hold_tx = true;
+    for t in 0..3 { s.transmit(&mut nic, 0, &mut frame(OTHER, t, 60), None, None, None, t as usize).unwrap(); }
+    for _ in 0..5 { assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, None), "pending: no TRANSMIT, no buffer"); }
+    // The NIC sends them: each comes back once, oldest first, TRANSMIT once.
+    nic.hold_tx = false;
+    nic.process_tx();
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (snp::TRANSMIT_INTERRUPT, Some(0)));
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, Some(1)));
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, Some(2)));
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, None));
+}
+
+#[test]
+fn recycled_buffers_follow_completion_in_order_across_ring_wraparound() {
+    let (_mem, mut nic, mut s) = up();
+    let (mut next, mut want) = (0usize, 0usize);
+    // Five rounds of 20 frames (100 > 32 descriptors), each completed by the
+    // NIC only after a GetStatus that must return nothing from that round.
+    for _ in 0..5 {
+        nic.hold_tx = true;
+        for _ in 0..20 {
+            s.transmit(&mut nic, 0, &mut frame(OTHER, next as u16, 60), None, None, None, next).unwrap();
+            next += 1;
+        }
+        let (bits, got) = s.get_status(&mut nic, true).unwrap();
+        assert_eq!((bits & snp::TRANSMIT_INTERRUPT, got), (0, None));
+        nic.hold_tx = false;
+        nic.process_tx();
+        let (bits, got) = s.get_status(&mut nic, true).unwrap();
+        assert_eq!(bits & snp::TRANSMIT_INTERRUPT, snp::TRANSMIT_INTERRUPT);
+        assert_eq!(got, Some(want));
+        want += 1;
+        while let (_, Some(t)) = s.get_status(&mut nic, true).unwrap() { assert_eq!(t, want); want += 1; }
+        assert_eq!(want, next);
+    }
+    assert_eq!(nic.wire.len(), 100);
+}
+
+#[test]
+fn frames_a_reset_abandons_on_the_ring_are_never_reported_sent() {
+    let (_mem, mut nic, mut s) = up();
+    s.transmit(&mut nic, 0, &mut frame(OTHER, 0, 60), None, None, None, 10).unwrap();
+    nic.hold_tx = true;
+    s.transmit(&mut nic, 0, &mut frame(OTHER, 1, 60), None, None, None, 11).unwrap();
+    s.transmit(&mut nic, 0, &mut frame(OTHER, 2, 60), None, None, None, 12).unwrap();
+    // The drain times out with 11 and 12 still on the ring; only 10 went out.
+    s.reset(&mut nic).unwrap();
+    nic.hold_tx = false;
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (snp::TRANSMIT_INTERRUPT, Some(10)));
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, None));
+    assert_eq!(nic.wire.len(), 1);
+    // The restarted ring sends and recycles as before.
+    s.transmit(&mut nic, 0, &mut frame(OTHER, 3, 60), None, None, None, 13).unwrap();
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (snp::TRANSMIT_INTERRUPT, Some(13)));
+}
+
+#[test]
 fn receive_fills_header_fields_and_keeps_a_frame_too_big_for_the_buffer() {
     let (_mem, mut nic, mut s) = up();
     nic.deliver(&frame(MAC, 5, 300));
