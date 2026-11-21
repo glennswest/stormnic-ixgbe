@@ -408,7 +408,7 @@ and claimed boothost/server3. The SOL log is quoted in
 [docs/snp.md](docs/snp.md#hardware-check-the-acceptance-for-4). The first
 boot (#7) bound 8086:1557 on server1 with the scaffold.
 
-Simulated tests (`sc-build scripts/test-hardware.sh`): 114 at 2744a14, for
+Simulated tests (`sc-build scripts/test-hardware.sh`): 116 at 7cf5065, for
 bring-up and PHY (including a bit-level I2C slave for the SFP+ EEPROM, port
 expander and CS4227), rings, SNP and PCI decode.
 

@@ -54,7 +54,7 @@ the `stormbootx-rustnic` media loads both (the X9 blades' medium), and the
 
 ## Test
 
-`sc-build scripts/test-hardware.sh` runs the simulated tests (114 at 2744a14).
+`sc-build scripts/test-hardware.sh` runs the simulated tests (116 at 7cf5065).
 On metal: file a stormbootx issue to pin the new commit and build the
 rustnic golden, propose this issue after it, and the master boots a blade
 from that golden (it holds the BMC and console access). The Intel test
@@ -190,7 +190,7 @@ traffic). The first boot after the parts arrive is #26's cold-start check
   - **Waiting on a blade boot, 2026-11-14.** stormbootx#211 pinned 02fcc5d; sc-build there passed at 25abfde and built `golden-stormbootx-rustnic-3a9c7bf19e9aba2d` (OVMF media line `rustnic ixgbe@02fcc5d`). No blade has booted it (newest ixgbe on any SOL capture: 728b328). Handed to the master with `wait-hardware` (server1, that golden); the same boot checks #33's jumbo lines. No code left.
 - [x] No stubs (#41, P-1; owner 2026-11-18 sweep): 3 stub-marker phrases in docs (bring-up.md drain failure and 025a137 known limits, spec 7.10) plus one in CHANGELOG. None was a missing feature: each reworded to what the code does (drain failure fails Start, no forced reset by policy; module ID/multispeed since #13; shared code has no PHY access for 15aa/15b0). Proof grep empty.
 - [x] Review finding 3154b4d007cd (#44, P1): an X552 port 1 I2C-mux (ESDP) failure stranded the shared SW_FW_SYNC PHY/I2C bits. 2026-11-20, 4753f48: acquire gives the bits back on a mux failure; release clears them even if the mux can't be restored, then returns the first error. Test `x552_port1_mux_failure_never_strands_the_shared_i2c_bits` (simulation; no X552 hardware).
-- [x] Review finding 5822308bd771 (#45, P1): `i2c::Bus::scl_high` returned Ok after its 500 µs stretch wait even with SCL still low. 2026-11-20: it is an `Error::I2c` now, so `attempt`'s bus clear and the callers' retries run. Test `scl_held_low_past_the_500_us_stretch_is_an_i2c_error_and_clocks_nothing` (simulated slave holding SCL low; 82599 and X552 layouts). Spec 3.2 notes the deviation from the shared code.
+- [x] Review finding 5822308bd771 (#45, P1): `i2c::Bus::scl_high` returned Ok after its 500 µs stretch wait even with SCL still low. 2026-11-20: it is an `Error::I2c` now, so `attempt`'s bus clear and the callers' retries run. Test `scl_held_low_past_the_500_us_stretch_is_an_i2c_error_and_clocks_nothing` (simulated slave holding SCL low; 82599 and X552 layouts). Spec 3.2 notes the deviation from the shared code. 7cf5065; sc-build passed the full line at 7cf5065 (2026-11-21): 116 tests, subsystem-11 check (133,120 bytes), byte-identical reproducible check, verbose build, clippy -D warnings, 0 warnings. Simulation only; ships with the next rustnic pin.
 - [ ] Jumbo frames (#33, P0; stormbootx#165: g16 is MTU 9000 end to end and stormbootx runs each NIC at min(DHCP option 26, SNP MaxPacketSize))
   - **In progress, 2026-11-07.** Plan, from the 82599/X540 datasheets (MAXFRS 0x4268 MFS bits 31:16 with CRC; HLREG0.JUMBOEN bit 2; SRRCTL.BSIZEPACKET in 1 KB units), same registers on X550/X552/X553 (BSD shared code `IXGBE_MAXFRS`, `IXGBE_HLREG0_JUMBOEN`):
     - `rings`: `BUF_SIZE` 9 KB (SRRCTL.BSIZEPACKET 9), so a frame never spans descriptors; `MAX_FRAME` 9018 without CRC (9000 + 14 header + a VLAN tag); `start` sets HLREG0.JUMBOEN and MAXFRS.MFS = 9022 (MAX_FRAME + CRC). Region 4096 + 64 x 9216 B = 145 pages.
