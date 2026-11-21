@@ -4,6 +4,7 @@
 
 ### 2026-11-21
 - **fix:** #47 (review finding 8e84eb358158): the per-port line called the 82599 CX4 (10f9) and XAUI (10fc) ports `backplane …`, because they share the backplane link setup. `report::media` now names them `10GBASE-CX4` and `XAUI`; link setup is unchanged. New test `x82599_cx4_and_xaui_ports_report_their_media_not_backplane`. README console table and docs/bring-up.md.
+- **docs:** #47 verified by sc-build at da2e187 (120 tests, reproducible, verbose, clippy, 0 warnings); README and CLAUDE.md test counts and work plan.
 
 ### 2026-11-21
 - **fix:** #46 (review finding b92772b25112): GetStatus handed back the oldest transmitted buffer whenever one was queued, and set TRANSMIT_INTERRUPT at Transmit, even with the descriptor still pending (no link, DMA stalled), so a stack could count a frame as sent that never went out. `Snp` now counts the descriptors still on the ring against `rings.tx_pending()`: a buffer comes back, oldest first, only after its descriptor has DD, and TRANSMIT is set only when the NIC completed one. Frames a Reset, Shutdown, Stop or the ExitBootServices halt leave on the ring after the drain are dropped from the recycle queue, not reported sent. Three new tests in `test/snp.rs` (GetStatus polled with TX held, wraparound over 100 frames, a reset abandoning frames). docs/snp.md GetStatus row and recycling section.
