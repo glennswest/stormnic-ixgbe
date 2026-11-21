@@ -7,7 +7,8 @@
 //!
 //! Timing (spec 3.2), in µs: rise + fall + set-up 3, clock high 4, low 5,
 //! start set-up 5, start hold 4, stop set-up 4, bus free 5; SCL waits up to
-//! 500 µs for a stretching slave; ACK is sampled 10 times 1 µs apart.
+//! 500 µs for a stretching slave; ACK is sampled 10 times 1 µs apart. SCL still low after the
+//! 500 µs is an I2C error (unlike the shared code, which clocks on).
 
 use super::{delay_ms, read, sync, write, Error, Family, Port, Registers, ESDP, R, STATUS};
 
@@ -44,15 +45,20 @@ impl<'a, Io: Registers> Bus<'a, Io> {
     fn get(&mut self) -> R<u32, Io::Error> { self.io.read(self.l.reg).map_err(Error::Io) }
     fn delay(&mut self, us: usize) { self.io.delay_us(us); }
 
+    /// Release SCL and wait up to 500 µs for a stretching slave to let it
+    /// rise. A line still low after that is an I2C error (finding
+    /// 5822308bd771): clocking on would sample SDA with no high phase, so a
+    /// stuck slave could read as an ACK or as data. The caller's bus clear and
+    /// retry then run, as for a NACK.
     fn scl_high(&mut self) -> R<(), Io::Error> {
         self.ctl |= self.l.scl_oe_n;
         for _ in 0..500 {
             self.ctl |= self.l.scl_out;
             self.put()?;
             self.delay(1);
-            if self.get()? & self.l.scl_in != 0 { break; }
+            if self.get()? & self.l.scl_in != 0 { return Ok(()); }
         }
-        Ok(())
+        Err(Error::I2c { device: 0 })
     }
     fn scl_low(&mut self) -> R<(), Io::Error> {
         self.ctl &= !(self.l.scl_out | self.l.scl_oe_n);

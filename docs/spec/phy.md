@@ -507,7 +507,9 @@ clock low 5, start set-up 5, start hold 4, stop set-up 4, bus free 5.
 - **Raise SCL:** (X552) set SCL-OE_N first. Then up to 500 times: set SCL-out,
   flush, wait 1 µs, and stop as soon as SCL-in reads 1. This is the
   clock-stretching allowance of 500 µs; the shared code does not fail when it
-  expires.
+  expires. This driver does: SCL still low after 500 µs is an I2C error, so
+  a stuck slave gives the bus clear and retry of a failed transfer instead of
+  SDA sampled with no clock-high phase (a false ACK or wrong data).
 - **Lower SCL:** clear SCL-out and (X552) clear SCL-OE_N. Flush, wait 1 µs.
 - **Read SDA:** (X552) set SDA-OE_N to release, flush, wait 1 µs. Sample SDA-in.
 - **Start:** (X552) set bit-bang enable. SDA = 1, raise SCL, wait 5, SDA = 0,

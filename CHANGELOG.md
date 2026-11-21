@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-11-20
+- **fix:** #45 (review finding 5822308bd771): the I2C bit-bang's SCL rise waited 500 µs for a stretching slave and then carried on as if the line were high, so a stuck SFP EEPROM, port expander or CS4227 could be clocked and sampled with no high phase (a false ACK or wrong data). SCL still low after 500 µs is now an I2C error; the transfer's bus clear and retries run as for a NACK, and an SFP byte read reports the module as absent. docs/spec/phy.md 3.2 records the difference from the shared code. New test `scl_held_low_past_the_500_us_stretch_is_an_i2c_error_and_clocks_nothing` (82599 and X552 layouts; the simulated slave can hold SCL low).
 - **fix:** #44 (review finding 3154b4d007cd): on X552 port 1, an I2C-mux (ESDP) access that failed after SW_FW_SYNC was taken returned with the shared PHY/I2C bits still held, so every later access on either port timed out until reset. A failed mux set-up now gives the bits back (and tries the mux off); release clears the bits even when the mux cannot be switched back, then returns the first error. New test `x552_port1_mux_failure_never_strands_the_shared_i2c_bits`.
 
 ### 2026-11-18

@@ -150,9 +150,9 @@ impl Registers for Fake {
             I2C_X552 => {
                 let scl = value & ((1 << 9) | (1 << 13)) != 0;
                 let sda = value & ((1 << 10) | (1 << 11)) != 0;
-                self.i2c.drive(scl, sda);
+                self.i2c.drive(scl && !self.i2c.scl_stuck, sda);
             }
-            I2C_82599 => self.i2c.drive(value & 2 != 0, value & 8 != 0),
+            I2C_82599 => self.i2c.drive(value & 2 != 0 && !self.i2c.scl_stuck, value & 8 != 0),
             // X552 firmware, when HICR.EN is set: a shadow-RAM read (0x31)
             // of the big-endian byte address in dword 1 answers from `nvm`
             // in dword 3, clears C and sets SV.
@@ -205,6 +205,9 @@ enum Phase { #[default] Idle, Rx, RxAck, Tx, TxAck }
 #[derive(Default)]
 struct Slave {
     scl: bool, sda: bool, pull: bool,
+    /// A slave holding SCL low for good (a stretch that never ends): the
+    /// line reads low and the slave sees no clock edge.
+    scl_stuck: bool,
     phase: Phase, shift: u8, n: u8, expect_addr: bool, reading: bool, acked: bool,
     txn: Vec<u8>, tx: Vec<u8>, cur: u8, sent: usize,
     sfp: Option<Vec<u8>>,
@@ -1632,4 +1635,26 @@ fn port_line_says_media_speed_fec_and_link_and_errors_on_no_link() {
     let fec = PortLine { fec: Fec::Negotiable { register: "AUTOC", value: 0x6000_8000 }, down: "", ..down };
     assert!(fec.error());
     assert!(fec.to_string().contains("FEC not set: error: KR AN still requests or offers clause-74 FEC (AUTOC 60008000"));
+}
+
+#[test]
+fn scl_held_low_past_the_500_us_stretch_is_an_i2c_error_and_clocks_nothing() {
+    // finding 5822308bd771
+    for family in [Family::F82599, Family::X552] {
+        let device = if family == Family::X552 { 0x15ac } else { 0x1557 };
+        let mut io = x82599(0, sfp(&[(0, 0x03)]));
+        let ok = hardware::i2c::read_byte(&mut io, port(family, device, 0), 0xa0, 0, 1, false);
+        assert_eq!(ok.ok(), Some(0x03), "{family:?}: a free bus reads the byte");
+
+        let mut io = x82599(0, sfp(&[(0, 0x03)]));
+        io.i2c.scl_stuck = true;
+        let r = hardware::i2c::read_byte(&mut io, port(family, device, 0), 0xa0, 0, 1, false);
+        assert!(matches!(r, Err(Error::I2c { device: 0xa0 })), "{family:?}: {r:?}");
+        // The start's SCL rise waits 500 µs and fails; the bus clear's start
+        // and its first pulse wait 500 µs each and stop. Nothing else is
+        // clocked: no address bit, no ACK sampled.
+        let polls = io.delays(1);
+        assert!((1500..1510).contains(&polls), "{family:?}: {polls} 1 µs waits");
+        assert_eq!(io.i2c.phase, Phase::Idle, "{family:?}: the slave saw no clock");
+    }
 }
