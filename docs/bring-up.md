@@ -249,9 +249,15 @@ settle:
    over the SNP and claimed its boothost. The SOL capture ran without a gap
    across Start.
 
-9. **Link from a link-down start** (#26): power server3 off (so the link
-   starts down), boot the rustnic media, and expect `reset (LNK_RST, link was
-   down)` and then `link up 10000 Mb/s` (or `multispeed: link at 10000 Mb/s`).
+9. **Link from a link-down start** (#26): power a blade whose port links
+   under Linux off (so the link starts down; e.g. server1; server3 is
+   not one, see below), boot the rustnic media, and expect `reset (LNK_RST, link was
+   down)` and then the port line ending `speed 10000 Mb/s full duplex, FEC
+   none, link UP` (`link up 10000 Mb/s` on media before 02fcc5d). The reset
+   line is a trace line: on a quiet console it shows only with the
+   `StormnicVerbose` switch (stormbootx v0.24.0+: `nic_verbose = true` in
+   stormboot.conf), or among the kept lines if the link stays down. So the
+   boot that proves this item runs verbose.
    Only the `RST` (link already up) branch is verified so far.
    **Seen on server3, 2026-10-02 to 10-03** (563ea8d, 10 boots): every boot
    was `LNK_RST`, passive DA identified, NVM sequence and 10G SFI written,
@@ -267,6 +273,17 @@ settle:
    our programming. To compare the cable directly, check the port under
    Linux's ixgbe (`ethtool` on the same port). The `stormbootx-ipxe` media no
    longer exists (stormbootx v0.17.0 dropped iPXE).
+   **Captures re-read, 2026-11-24:** server3's port is no test of the driver:
+   Linux's ixgbe on it logs `detected SFP+: 3` and never `NIC Link is Up` on
+   any boot since early October, so the port has no link whatever drives it.
+   server7's port does link (Linux, and our `RST` path on its next boot), yet
+   its one `LNK_RST` boot (563ea8d) also ended `link down after 3000 ms` and
+   stormbootx saw `nic 0 … link down/unknown`. So the link-down start is not
+   proven on a working port either. The check is now one cold boot of
+   **server1** (powered off first) on the newest rustnic golden; the quiet
+   console's port line gives LINKS/AUTOC/AUTOC2/ESDP if the link stays down,
+   after the kept trace lines (reset type, module, multispeed). If Start took
+   `RST` (the link was already up) the boot says nothing about this item.
 
 Not checkable on the X9 blades (no such hardware known):
 - X540: items 3 (PHY MDIO address) and 13 (7.0xC800 decode).

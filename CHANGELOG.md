@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-11-24
+- **docs:** #26: docs/bring-up.md hardware check 9 re-read against the SOL captures. server3's port has no link under Linux either (`detected SFP+: 3`, never `NIC Link is Up`), so it can't test the driver; server7's working port also stayed down on its one `LNK_RST` boot (563ea8d). The check is now a cold, verbose (`nic_verbose = true`) boot of server1 on the newest rustnic golden, since the reset line is trace-only; the expected line is the #35 port line.
+
 ### 2026-11-21
 - **fix:** #47 (review finding 8e84eb358158): the per-port line called the 82599 CX4 (10f9) and XAUI (10fc) ports `backplane …`, because they share the backplane link setup. `report::media` now names them `10GBASE-CX4` and `XAUI`; link setup is unchanged. New test `x82599_cx4_and_xaui_ports_report_their_media_not_backplane`. README console table and docs/bring-up.md.
 - **docs:** #47 verified by sc-build at da2e187 (120 tests, reproducible, verbose, clippy, 0 warnings); README and CLAUDE.md test counts and work plan.
